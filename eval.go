@@ -16,17 +16,26 @@ import (
 )
 
 // PosError is an error annotated with a source position (§11.2.0).
+// When Cause is a *PosError, Error() formats a stack-trace-like chain.
 type PosError struct {
-	Pos token.Pos
-	Err error
+	Pos   token.Pos
+	Msg   string
+	Cause error
 }
 
 func (e *PosError) Error() string {
-	return e.Pos.String() + ": " + e.Err.Error()
+	s := e.Pos.String() + ": " + e.Msg
+	if e.Cause == nil {
+		return s
+	}
+	if pe, ok := e.Cause.(*PosError); ok {
+		return s + "\n  " + strings.ReplaceAll(pe.Error(), "\n", "\n  ")
+	}
+	return s + ": " + e.Cause.Error()
 }
 
 func (e *PosError) Unwrap() error {
-	return e.Err
+	return e.Cause
 }
 
 // Scope represents a lexical scope for binding resolution.
@@ -152,17 +161,17 @@ func (ev *Evaluator) evalBindings(bindings []*ast.Binding, scope *Scope) (*Value
 		case *ast.FunctionExpr, *ast.OfExpr:
 		default:
 			if nameSet[b.Name] {
-				return nil, &PosError{Pos: b.Position, Err: fmt.Errorf("duplicate binding %q", b.Name)}
+				return nil, &PosError{Pos: b.Position, Msg: fmt.Sprintf("duplicate binding %q", b.Name)}
 			}
 		}
 		// Standalone self/env/undefined are errors
 		switch b.Value.(type) {
 		case *ast.SelfExpr:
-			return nil, &PosError{Pos: b.Value.Pos(), Err: fmt.Errorf("standalone self is not a value")}
+			return nil, &PosError{Pos: b.Value.Pos(), Msg: "standalone self is not a value"}
 		case *ast.EnvExpr:
-			return nil, &PosError{Pos: b.Value.Pos(), Err: fmt.Errorf("standalone env is not a value")}
+			return nil, &PosError{Pos: b.Value.Pos(), Msg: "standalone env is not a value"}
 		case *ast.UndefinedExpr:
-			return nil, &PosError{Pos: b.Value.Pos(), Err: fmt.Errorf("undefined cannot be used as a literal value")}
+			return nil, &PosError{Pos: b.Value.Pos(), Msg: "undefined cannot be used as a literal value"}
 		}
 		nameSet[b.Name] = true
 		bindingByName[b.Name] = b
@@ -193,24 +202,20 @@ func (ev *Evaluator) evalBindings(bindings []*ast.Binding, scope *Scope) (*Value
 		v, err := ev.evalExpr(b.Value, scope)
 		scope.exclude = oldExclude
 		if err != nil {
-			var pe *PosError
-			if errors.As(err, &pe) {
-				return nil, &PosError{Pos: pe.Pos, Err: fmt.Errorf("binding %q: %w", b.Name, pe.Err)}
-			}
-			return nil, fmt.Errorf("binding %q: %w", b.Name, err)
+			return nil, &PosError{Pos: b.Position, Msg: fmt.Sprintf("binding %q", b.Name), Cause: err}
 		}
 
 		// §3.4: bare empty list without type annotation is an error
 		if _, isBareList := b.Value.(*ast.ListExpr); isBareList {
 			if v.Kind == KindList && len(v.List.Elements) == 0 {
-				return nil, &PosError{Pos: b.Position, Err: fmt.Errorf("binding %q: empty list requires type annotation (e.g. [] as [i32])", b.Name)}
+				return nil, &PosError{Pos: b.Position, Msg: fmt.Sprintf("binding %q: empty list requires type annotation (e.g. [] as [i32])", b.Name)}
 			}
 		}
 
 		// Handle "called" type naming (§6)
 		if b.CalledName != "" {
 			if _, exists := ev.types.types[b.CalledName]; exists {
-				return nil, &PosError{Pos: b.Position, Err: fmt.Errorf("duplicate type name %q", b.CalledName)}
+				return nil, &PosError{Pos: b.Position, Msg: fmt.Sprintf("duplicate type name %q", b.CalledName)}
 			}
 			ti := ev.inferType(v)
 			ti.Name = b.CalledName
@@ -256,13 +261,13 @@ func (ev *Evaluator) evalBindings(bindings []*ast.Binding, scope *Scope) (*Value
 	}
 	for name, refs := range funcRefs {
 		if refs[name] {
-			return nil, &PosError{Pos: funcPos[name], Err: fmt.Errorf("direct recursion: %q calls itself", name)}
+			return nil, &PosError{Pos: funcPos[name], Msg: fmt.Sprintf("direct recursion: %q calls itself", name)}
 		}
 	}
 	for a, aRefs := range funcRefs {
 		for b := range aRefs {
 			if bRefs, ok := funcRefs[b]; ok && bRefs[a] {
-				return nil, &PosError{Pos: funcPos[a], Err: fmt.Errorf("mutual recursion between %q and %q", a, b)}
+				return nil, &PosError{Pos: funcPos[a], Msg: fmt.Sprintf("mutual recursion between %q and %q", a, b)}
 			}
 		}
 	}
@@ -316,7 +321,7 @@ func topoSort(bindings []*ast.Binding, deps map[string][]string) ([]*ast.Binding
 	if len(order) < len(bindings) {
 		for _, b := range bindings {
 			if inDegree[b.Name] > 0 {
-				return nil, &PosError{Pos: b.Position, Err: fmt.Errorf("circular dependency involving %q", b.Name)}
+				return nil, &PosError{Pos: b.Position, Msg: fmt.Sprintf("circular dependency involving %q", b.Name)}
 			}
 		}
 	}
@@ -330,7 +335,7 @@ func (ev *Evaluator) evalExpr(expr ast.Expr, scope *Scope) (*Value, error) {
 	if err != nil {
 		var pe *PosError
 		if !errors.As(err, &pe) {
-			return nil, &PosError{Pos: expr.Pos(), Err: err}
+			return nil, &PosError{Pos: expr.Pos(), Msg: err.Error()}
 		}
 	}
 	return v, err
