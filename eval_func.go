@@ -260,3 +260,113 @@ func (ev *Evaluator) evalInterpolatedString(e *ast.InterpolatedStringExpr, scope
 	}
 	return String(sb.String()), nil
 }
+
+func (ev *Evaluator) evalCall(e *ast.CallExpr, scope *Scope) (*Value, error) {
+	// Check for std library calls: std.funcName(...)
+	if me, ok := e.Func.(*ast.MemberExpr); ok {
+		if id, ok := me.Object.(*ast.IdentExpr); ok && id.Name == "std" {
+			return ev.evalStdCall(me.Member, e.Args, scope)
+		}
+	}
+
+	fn, err := ev.evalExpr(e.Func, scope)
+	if err != nil {
+		return nil, err
+	}
+	if fn.Kind != KindFunction {
+		return nil, fmt.Errorf("calling non-function value (%s)", fn.Kind)
+	}
+
+	fv := fn.Function
+	fe, ok := fv.Body.(*ast.FunctionExpr)
+	if !ok {
+		return nil, fmt.Errorf("invalid function body")
+	}
+
+	// Evaluate arguments
+	args := make([]*Value, 0, len(e.Args))
+	for _, a := range e.Args {
+		v, err := ev.evalExpr(a, scope)
+		if err != nil {
+			return nil, err
+		}
+		args = append(args, v)
+	}
+
+	// Fill default values for missing arguments
+	for i := len(args); i < len(fe.Params); i++ {
+		if fe.Params[i].Default != nil {
+			dv, err := ev.evalExpr(fe.Params[i].Default, fv.Scope.(*Scope))
+			if err != nil {
+				return nil, err
+			}
+			args = append(args, dv)
+		}
+	}
+
+	// Create function scope and bind parameters
+	fnScope := newScope(fv.Scope.(*Scope))
+	for i, p := range fe.Params {
+		if i < len(args) {
+			arg := args[i]
+			// §3.3: tuple shape check
+			if p.TypeExpr != nil && len(p.TypeExpr.TupleElems) > 0 && arg.Kind == KindTuple {
+				if len(p.TypeExpr.TupleElems) != len(arg.Tuple.Elements) {
+					return nil, fmt.Errorf("argument %q: expected %d-element tuple, got %d", p.Name, len(p.TypeExpr.TupleElems), len(arg.Tuple.Elements))
+				}
+			}
+			// §5: adopt parameter type for adoptable literals
+			if p.TypeExpr != nil && arg.Adoptable {
+				pti := ev.resolveTypeExpr(p.TypeExpr)
+				if pti != nil && pti.BaseType != "" {
+					if arg.Kind == KindInt && isIntegerType(pti.BaseType) {
+						if err := checkIntRange(arg.Int, pti.BitSize, pti.Signed); err != nil {
+							return nil, fmt.Errorf("argument %q: %w", p.Name, err)
+						}
+					}
+					arg.Type = pti
+					arg.Adoptable = false
+				}
+			}
+			// §6.3: nominal struct type check
+			if p.TypeExpr != nil && arg.Kind == KindStruct {
+				pti := ev.resolveTypeExpr(p.TypeExpr)
+				if pti != nil && pti.Name != "" {
+					if expectedFields, ok := ev.structShapes[pti.Name]; ok {
+						if len(arg.Struct.Fields) != len(expectedFields) {
+							return nil, fmt.Errorf("argument %q: expected %s (%d fields), got struct with %d fields",
+								p.Name, pti.Name, len(expectedFields), len(arg.Struct.Fields))
+						}
+					}
+				}
+			}
+			fnScope.set(p.Name, arg)
+		}
+	}
+
+	// Evaluate intermediate bindings and body
+	for _, b := range fe.Bindings {
+		v, err := ev.evalExpr(b.Value, fnScope)
+		if err != nil {
+			return nil, err
+		}
+		fnScope.set(b.Name, v)
+	}
+
+	if fe.Body == nil {
+		return nil, fmt.Errorf("function body has no return expression")
+	}
+	result, err := ev.evalExpr(fe.Body, fnScope)
+	if err != nil {
+		return nil, err
+	}
+
+	// §6.3: check function return type compatibility for named types
+	if fv.ReturnType != nil && fv.ReturnType.Name != "" {
+		if result.Type != nil && result.Type.Name != "" && result.Type.Name != fv.ReturnType.Name {
+			return nil, fmt.Errorf("function return type mismatch: expected %s, got %s", fv.ReturnType.Name, result.Type.Name)
+		}
+	}
+
+	return result, nil
+}
