@@ -654,13 +654,13 @@ func (ev *Evaluator) evalStructImport(e *ast.StructImportExpr) (*Value, error) {
 
 	data, err := os.ReadFile(path)
 	if err != nil {
-		return nil, fmt.Errorf("import %q: %w", e.Path, err)
+		return nil, &PosError{Pos: e.Position, Msg: fmt.Sprintf("import %q", e.Path), Cause: err}
 	}
 
 	p := ast.NewParser(data, path)
 	doc, err := p.Parse()
 	if err != nil {
-		return nil, fmt.Errorf("import %q: %w", e.Path, err)
+		return nil, &PosError{Pos: e.Position, Msg: fmt.Sprintf("import %q", e.Path), Cause: err}
 	}
 
 	subEv := &Evaluator{
@@ -676,7 +676,7 @@ func (ev *Evaluator) evalStructImport(e *ast.StructImportExpr) (*Value, error) {
 
 	val, err := subEv.EvalDocument(doc)
 	if err != nil {
-		return nil, fmt.Errorf("import %q: %w", e.Path, err)
+		return nil, &PosError{Pos: e.Position, Msg: fmt.Sprintf("import %q", e.Path), Cause: err}
 	}
 
 	ev.imported[path] = val
