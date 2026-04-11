@@ -77,11 +77,20 @@ func (ev *Evaluator) evalAs(e *ast.AsExpr, scope *Scope) (*Value, error) {
 	if err != nil {
 		return nil, err
 	}
+	ti := ev.resolveTypeExpr(e.TypeExpr)
+
+	// §6.1: undefined propagates through "as", but type name MUST still be validated
 	if val.Kind == KindUndefined {
+		if ti.Name != "" && ti.BaseType == "" {
+			// Named type — check it exists in the type registry or as a builtin
+			if _, ok := ev.types.get(e.TypeExpr.Path); !ok {
+				if parseBuiltinType(ti.Name) == nil {
+					return nil, fmt.Errorf("unknown type %q", ti.Name)
+				}
+			}
+		}
 		return Undefined(), nil
 	}
-
-	ti := ev.resolveTypeExpr(e.TypeExpr)
 
 	// Enum variant resolution: bare ident "as EnumType" → variant lookup
 	identName := ""
