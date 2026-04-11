@@ -280,6 +280,176 @@ func TestContainsNonList(t *testing.T) {
 	}
 }
 
+// --- Type conversion tests ---
+
+func TestToStringFromTypes(t *testing.T) {
+	tests := []struct {
+		name string
+		v    *Value
+		want string
+	}{
+		{"string", String("hello"), "hello"},
+		{"bool true", Bool(true), "true"},
+		{"bool false", Bool(false), "false"},
+		{"int", Int(42), "42"},
+		{"float", Float64(3.14), "3.14"},
+		{"null", Null(), "null"},
+	}
+	for _, tt := range tests {
+		r, err := ToString(tt.v)
+		if err != nil {
+			t.Errorf("%s: %v", tt.name, err)
+			continue
+		}
+		if r.Str != tt.want {
+			t.Errorf("%s: got %q, want %q", tt.name, r.Str, tt.want)
+		}
+	}
+}
+
+func TestToStringNaN(t *testing.T) {
+	nan := &Value{Kind: KindFloat, Float: new(big.Float), FloatIsNaN: true}
+	r, err := ToString(nan)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if r.Str != "nan" {
+		t.Errorf("got %q, want %q", r.Str, "nan")
+	}
+}
+
+func TestToStringUnsupported(t *testing.T) {
+	_, err := ToString(NewList(nil, nil))
+	if err == nil {
+		t.Fatal("expected error for list → string")
+	}
+}
+
+func TestToIntFromFloat(t *testing.T) {
+	r, err := ToInt(Float64(3.9))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if r.Kind != KindInt || r.Int.Int64() != 3 {
+		t.Errorf("got %v, want 3 (truncated)", r.Int)
+	}
+}
+
+func TestToIntFromString(t *testing.T) {
+	tests := []struct {
+		s    string
+		want int64
+	}{
+		{"42", 42},
+		{"0xff", 255},
+		{"0o77", 63},
+		{"0b1010", 10},
+		{"1_000", 1000},
+	}
+	for _, tt := range tests {
+		r, err := ToInt(String(tt.s))
+		if err != nil {
+			t.Errorf("%s: %v", tt.s, err)
+			continue
+		}
+		if r.Int.Int64() != tt.want {
+			t.Errorf("%s: got %d, want %d", tt.s, r.Int.Int64(), tt.want)
+		}
+	}
+}
+
+func TestToIntFromNaN(t *testing.T) {
+	nan := &Value{Kind: KindFloat, Float: new(big.Float), FloatIsNaN: true}
+	_, err := ToInt(nan)
+	if err == nil {
+		t.Fatal("expected error for NaN → int")
+	}
+}
+
+func TestToIntIdentity(t *testing.T) {
+	v := Int(99)
+	r, err := ToInt(v)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if r != v {
+		t.Error("ToInt on int should return same value")
+	}
+}
+
+func TestToIntInvalidString(t *testing.T) {
+	_, err := ToInt(String("not_a_number"))
+	if err == nil {
+		t.Fatal("expected error for invalid string → int")
+	}
+}
+
+func TestToFloatFromInt(t *testing.T) {
+	r, err := ToFloat(Int(42))
+	if err != nil {
+		t.Fatal(err)
+	}
+	f, _ := r.Float.Float64()
+	if r.Kind != KindFloat || f != 42.0 {
+		t.Errorf("got %v, want 42.0", f)
+	}
+}
+
+func TestToFloatFromString(t *testing.T) {
+	tests := []struct {
+		s    string
+		want float64
+		nan  bool
+		inf  int // -1, 0, +1
+	}{
+		{"3.14", 3.14, false, 0},
+		{"nan", 0, true, 0},
+		{"-inf", 0, false, -1},
+		{"inf", 0, false, 1},
+	}
+	for _, tt := range tests {
+		r, err := ToFloat(String(tt.s))
+		if err != nil {
+			t.Errorf("%s: %v", tt.s, err)
+			continue
+		}
+		if tt.nan {
+			if !r.FloatIsNaN {
+				t.Errorf("%s: expected NaN", tt.s)
+			}
+			continue
+		}
+		if tt.inf != 0 {
+			if !r.Float.IsInf() {
+				t.Errorf("%s: expected inf", tt.s)
+			}
+			continue
+		}
+		f, _ := r.Float.Float64()
+		if f != tt.want {
+			t.Errorf("%s: got %v, want %v", tt.s, f, tt.want)
+		}
+	}
+}
+
+func TestToFloatIdentity(t *testing.T) {
+	v := Float64(1.5)
+	r, err := ToFloat(v)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if r != v {
+		t.Error("ToFloat on float should return same value")
+	}
+}
+
+func TestToFloatUnsupported(t *testing.T) {
+	_, err := ToFloat(Bool(true))
+	if err == nil {
+		t.Fatal("expected error for bool → float")
+	}
+}
+
 func TestEqualStruct(t *testing.T) {
 	a := NewStruct(Field{Name: "x", Value: Int(1)}, Field{Name: "y", Value: Int(2)})
 	b := NewStruct(Field{Name: "x", Value: Int(1)}, Field{Name: "y", Value: Int(2)})

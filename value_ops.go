@@ -218,6 +218,115 @@ func Contains(list, elem *Value) (bool, error) {
 	return false, nil
 }
 
+// --- Type conversions ---
+
+// ToString converts v to a string Value.
+// Supported source kinds: string, bool, int, float, null, enum, tagged union, union.
+func ToString(v *Value) (*Value, error) {
+	return toStr(v)
+}
+
+func toStr(v *Value) (*Value, error) {
+	switch v.Kind {
+	case KindString:
+		return v, nil
+	case KindBool:
+		if v.Bool {
+			return String("true"), nil
+		}
+		return String("false"), nil
+	case KindInt:
+		return String(v.Int.String()), nil
+	case KindFloat:
+		if v.FloatIsNaN {
+			return String("nan"), nil
+		}
+		f, _ := v.Float.Float64()
+		return String(formatFloat(f)), nil
+	case KindNull:
+		return String("null"), nil
+	case KindEnum:
+		return String(v.Enum.Variant), nil
+	case KindTaggedUnion:
+		return toStr(v.TaggedUnion.Inner)
+	case KindUnion:
+		return toStr(v.Union.Inner)
+	default:
+		return nil, fmt.Errorf("cannot convert %s to string", v.Kind)
+	}
+}
+
+// ToInt converts v to an integer Value.
+// Supported source kinds: int, float (truncated), string (parsed).
+// String parsing supports decimal, 0x hex, 0o octal, and 0b binary prefixes.
+func ToInt(v *Value) (*Value, error) {
+	switch v.Kind {
+	case KindInt:
+		return v, nil
+	case KindFloat:
+		if v.FloatIsNaN {
+			return nil, fmt.Errorf("cannot convert NaN to integer")
+		}
+		if v.Float.IsInf() {
+			return nil, fmt.Errorf("cannot convert infinity to integer")
+		}
+		n := new(big.Int)
+		v.Float.Int(n)
+		return &Value{Kind: KindInt, Int: n}, nil
+	case KindString:
+		n := new(big.Int)
+		s := strings.ReplaceAll(v.Str, "_", "")
+		var ok bool
+		switch {
+		case strings.HasPrefix(s, "0x") || strings.HasPrefix(s, "0X"):
+			_, ok = n.SetString(s[2:], 16)
+		case strings.HasPrefix(s, "0o") || strings.HasPrefix(s, "0O"):
+			_, ok = n.SetString(s[2:], 8)
+		case strings.HasPrefix(s, "0b") || strings.HasPrefix(s, "0B"):
+			_, ok = n.SetString(s[2:], 2)
+		default:
+			_, ok = n.SetString(s, 10)
+		}
+		if !ok {
+			return nil, fmt.Errorf("cannot parse %q as integer", v.Str)
+		}
+		return &Value{Kind: KindInt, Int: n}, nil
+	default:
+		return nil, fmt.Errorf("cannot convert %s to integer", v.Kind)
+	}
+}
+
+// ToFloat converts v to a float Value.
+// Supported source kinds: float, int, string (parsed).
+// String parsing supports decimal notation, "inf", "-inf", "nan".
+func ToFloat(v *Value) (*Value, error) {
+	switch v.Kind {
+	case KindFloat:
+		return v, nil
+	case KindInt:
+		f := new(big.Float).SetPrec(53).SetInt(v.Int)
+		return &Value{Kind: KindFloat, Float: f}, nil
+	case KindString:
+		s := strings.ReplaceAll(v.Str, "_", "")
+		switch s {
+		case "inf":
+			return &Value{Kind: KindFloat, Float: new(big.Float).SetInf(false)}, nil
+		case "-inf":
+			return &Value{Kind: KindFloat, Float: new(big.Float).SetInf(true)}, nil
+		case "nan", "-nan":
+			return &Value{Kind: KindFloat, Float: new(big.Float), FloatIsNaN: true}, nil
+		default:
+			f, _, err := big.ParseFloat(s, 10, 53, big.ToNearestEven)
+			if err != nil {
+				return nil, fmt.Errorf("cannot parse %q as float", v.Str)
+			}
+			return &Value{Kind: KindFloat, Float: f}, nil
+		}
+	default:
+		return nil, fmt.Errorf("cannot convert %s to float", v.Kind)
+	}
+}
+
 // simpleNumericOp is a helper for binary numeric operations that don't have
 // special cases (Add, Sub, Mul).
 func simpleNumericOp(name string, a, b *Value,
