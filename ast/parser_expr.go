@@ -76,19 +76,11 @@ func (p *Parser) parseEquality() Expr {
 		variant := p.parseNameOrKeyword()
 		return &IsNamedExpr{Value: left, Variant: variant, Negated: true, Position: pos}
 	case token.IsNot:
-		// §11: chained is not — bare ident looks like a new binding.
-		if id, ok := left.(*IdentExpr); ok {
-			p.errorf(p.cur.Pos, "chained 'is not' is not allowed; use 'self.%s is not ...' for inequality", id.Name)
-		}
 		pos := p.cur.Pos
 		p.advance()
 		right := p.parseMembership()
 		return &BinaryExpr{Op: token.IsNot, Left: left, Right: right, Position: pos}
 	case token.Is:
-		// §11: chained is — bare ident looks like a new binding.
-		if id, ok := left.(*IdentExpr); ok {
-			p.errorf(p.cur.Pos, "chained 'is' is not allowed; use 'self.%s is ...' for equality", id.Name)
-		}
 		pos := p.cur.Pos
 		p.advance()
 		right := p.parseMembership()

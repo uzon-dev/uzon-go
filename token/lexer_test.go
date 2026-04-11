@@ -362,14 +362,14 @@ func TestLexerMultilineBinding(t *testing.T) {
 }
 
 func TestLexerStringInterpolation(t *testing.T) {
-	// Basic interpolation: {self.x} is preserved as literal text.
-	lex := NewLexer([]byte(`"hello {self.x}"`), "")
+	// Basic interpolation: {config.x} is preserved as literal text.
+	lex := NewLexer([]byte(`"hello {config.x}"`), "")
 	tok := lex.Next()
 	if tok.Type != StringLit {
 		t.Errorf("expected StringLit, got %v", tok.Type)
 	}
-	if tok.Literal != "hello {self.x}" {
-		t.Errorf("expected %q, got %q", "hello {self.x}", tok.Literal)
+	if tok.Literal != "hello {config.x}" {
+		t.Errorf("expected %q, got %q", "hello {config.x}", tok.Literal)
 	}
 
 	// Nested string inside interpolation.

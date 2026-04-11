@@ -13,6 +13,13 @@ import (
 	"github.com/uzon-dev/uzon-go/token"
 )
 
+// isUnresolvedIdent returns true if the value is a bare identifier that was not
+// resolved by scope lookup or enum variant resolution. Per §5.12, such identifiers
+// behave as undefined in non-enum contexts.
+func isUnresolvedIdent(v *Value) bool {
+	return v != nil && v.Type != nil && v.Type.Name == "__ident__"
+}
+
 // --- Binary and unary operations ---
 
 func (ev *Evaluator) evalBinary(e *ast.BinaryExpr, scope *Scope) (*Value, error) {
@@ -32,7 +39,7 @@ func (ev *Evaluator) evalBinary(e *ast.BinaryExpr, scope *Scope) (*Value, error)
 
 	switch e.Op {
 	case token.OrElse:
-		if left.Kind == KindUndefined {
+		if left.Kind == KindUndefined || isUnresolvedIdent(left) {
 			return right, nil
 		}
 		return left, nil
@@ -82,6 +89,13 @@ func (ev *Evaluator) evalLogical(e *ast.BinaryExpr, scope *Scope) (*Value, error
 
 // evalEquality implements "is" and "is not" comparison (§5.2).
 func (ev *Evaluator) evalEquality(left, right *Value, negated bool) (*Value, error) {
+	// Treat unresolved identifiers as undefined for comparison
+	if isUnresolvedIdent(left) {
+		left = Undefined()
+	}
+	if isUnresolvedIdent(right) {
+		right = Undefined()
+	}
 	// null and undefined are comparable with any type
 	if left.Kind == KindNull || left.Kind == KindUndefined ||
 		right.Kind == KindNull || right.Kind == KindUndefined {
@@ -178,6 +192,18 @@ func valuesEqual(a, b *Value) bool {
 func (ev *Evaluator) evalIn(left, right *Value) (*Value, error) {
 	if right.Kind != KindList {
 		return nil, fmt.Errorf("'in' requires a list on the right side, got %s", right.Kind)
+	}
+	// §3.5 type-context inference: bare ident in "x in [enum_list]" resolves as variant
+	if isUnresolvedIdent(left) && len(right.List.Elements) > 0 {
+		for _, el := range right.List.Elements {
+			if el.Kind == KindEnum {
+				left = &Value{Kind: KindEnum, Enum: &EnumValue{
+					Variant:  left.Str,
+					Variants: el.Enum.Variants,
+				}, Type: el.Type}
+				break
+			}
+		}
 	}
 	if len(right.List.Elements) > 0 && left.Kind != KindNull {
 		var listElem *Value
@@ -537,7 +563,7 @@ func (ev *Evaluator) evalCase(e *ast.CaseExpr, scope *Scope) (*Value, error) {
 	if err != nil {
 		return nil, err
 	}
-	if scrutinee.Kind == KindUndefined {
+	if scrutinee.Kind == KindUndefined || isUnresolvedIdent(scrutinee) {
 		return nil, fmt.Errorf("case scrutinee is undefined")
 	}
 

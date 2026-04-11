@@ -63,8 +63,8 @@ z is true`)
 func TestEvalNullAndUndefined(t *testing.T) {
 	v := evalSrc(t, `
 a is null
-b is self.a is null
-c is self.nonexistent or else "fallback"`)
+b is a is null
+c is nonexistent or else "fallback"`)
 	a := getField(t, v, "a")
 	if a.Kind != KindNull {
 		t.Errorf("a: want null, got %s", a.Kind)
@@ -123,20 +123,20 @@ c is 2.0 * 3.0`)
 	}
 }
 
-// --- Self-reference and scope ---
+// --- Scope chain reference ---
 
-func TestEvalSelfReference(t *testing.T) {
+func TestEvalScopeReference(t *testing.T) {
 	v := evalSrc(t, `
 x is 10
-y is self.x + 5`)
+y is x + 5`)
 	y := getField(t, v, "y")
 	if y.Int.Int64() != 15 {
 		t.Errorf("y: want 15, got %d", y.Int.Int64())
 	}
 }
 
-func TestEvalSelfExclusion(t *testing.T) {
-	v := evalSrc(t, `x is self.x or else 1`)
+func TestEvalScopeExclusion(t *testing.T) {
+	v := evalSrc(t, `x is x or else 1`)
 	x := getField(t, v, "x")
 	if x.Int.Int64() != 1 {
 		t.Errorf("x: want 1, got %d", x.Int.Int64())
@@ -147,8 +147,8 @@ func TestEvalScopeChain(t *testing.T) {
 	v := evalSrc(t, `
 base_port is 8080
 server is {
-    port is self.base_port
-    admin is self.port + 1
+    port is base_port
+    admin is port + 1
 }`)
 	server := getField(t, v, "server")
 	port := server.Struct.Get("port")
@@ -169,7 +169,7 @@ server is {
     host is "localhost"
     port is 8080
 }
-url is self.server.host`)
+url is server.host`)
 	url := getField(t, v, "url")
 	if url.Str != "localhost" {
 		t.Errorf("want \"localhost\", got %q", url.Str)
@@ -179,7 +179,7 @@ url is self.server.host`)
 func TestEvalMemberAccessOnUndefined(t *testing.T) {
 	v := evalSrc(t, `
 config is { }
-port is self.config.missing.nested or else 8080`)
+port is config.missing.nested or else 8080`)
 	port := getField(t, v, "port")
 	if port.Int.Int64() != 8080 {
 		t.Errorf("want 8080, got %d", port.Int.Int64())
@@ -191,7 +191,7 @@ port is self.config.missing.nested or else 8080`)
 func TestEvalIfExpr(t *testing.T) {
 	v := evalSrc(t, `
 x is 5
-y is if self.x > 3 then "big" else "small"`)
+y is if x > 3 then "big" else "small"`)
 	y := getField(t, v, "y")
 	if y.Str != "big" {
 		t.Errorf("want \"big\", got %q", y.Str)
@@ -239,9 +239,9 @@ func TestEvalAre(t *testing.T) {
 func TestEvalListAccess(t *testing.T) {
 	v := evalSrc(t, `
 scores is [ 97, 85, 92 ]
-a is self.scores.0
-b is self.scores.first
-c is self.scores.second`)
+a is scores.0
+b is scores.first
+c is scores.second`)
 	a := getField(t, v, "a")
 	if a.Int.Int64() != 97 {
 		t.Errorf("a: want 97, got %d", a.Int.Int64())
@@ -261,7 +261,7 @@ c is self.scores.second`)
 func TestEvalWith(t *testing.T) {
 	v := evalSrc(t, `
 base is { host is "localhost", port is 8080 }
-dev is self.base with { port is 9090 }`)
+dev is base with { port is 9090 }`)
 	dev := getField(t, v, "dev")
 	port := dev.Struct.Get("port")
 	if port.Int.Int64() != 9090 {
@@ -276,7 +276,7 @@ dev is self.base with { port is 9090 }`)
 func TestEvalExtends(t *testing.T) {
 	v := evalSrc(t, `
 base is { host is "localhost", port is 8080 }
-secure is self.base extends { tls is true }`)
+secure is base extends { tls is true }`)
 	secure := getField(t, v, "secure")
 	tls := secure.Struct.Get("tls")
 	if tls.Kind != KindBool || !tls.Bool {
@@ -290,7 +290,7 @@ secure is self.base extends { tls is true }`)
 func TestEvalWithTypeCompat(t *testing.T) {
 	p := ast.NewParser([]byte(`
 base is { x is 10, y is 20 }
-bad is self.base with { x is "string" }`), "test.uzon")
+bad is base with { x is "string" }`), "test.uzon")
 	doc, err := p.Parse()
 	if err != nil {
 		t.Fatal(err)
@@ -305,7 +305,7 @@ bad is self.base with { x is "string" }`), "test.uzon")
 func TestEvalWithNullCompat(t *testing.T) {
 	v := evalSrc(t, `
 base is { x is 10, y is 20 }
-result is self.base with { x is null }`)
+result is base with { x is null }`)
 	result := getField(t, v, "result")
 	x := result.Struct.Get("x")
 	if x.Kind != KindNull {
@@ -340,7 +340,7 @@ func TestEvalRepeat(t *testing.T) {
 func TestEvalInterpolation(t *testing.T) {
 	v := evalSrc(t, `
 name is "UZON"
-greeting is "Hello, {self.name}!"`)
+greeting is "Hello, {name}!"`)
 	g := getField(t, v, "greeting")
 	if g.Str != "Hello, UZON!" {
 		t.Errorf("want \"Hello, UZON!\", got %q", g.Str)
@@ -350,7 +350,7 @@ greeting is "Hello, {self.name}!"`)
 // --- Or else ---
 
 func TestEvalOrElse(t *testing.T) {
-	v := evalSrc(t, `x is self.missing or else 42`)
+	v := evalSrc(t, `x is missing or else 42`)
 	x := getField(t, v, "x")
 	if x.Int.Int64() != 42 {
 		t.Errorf("want 42, got %d", x.Int.Int64())
@@ -378,7 +378,7 @@ func TestEvalEnum(t *testing.T) {
 func TestEvalTaggedUnion(t *testing.T) {
 	v := evalSrc(t, `
 status is "all good" named ok from ok as string, err as string
-is_ok is self.status is named ok`)
+is_ok is status is named ok`)
 	isOk := getField(t, v, "is_ok")
 	if !isOk.Bool {
 		t.Error("want true, got false")
@@ -388,8 +388,8 @@ is_ok is self.status is named ok`)
 func TestEvalTaggedUnionTransparency(t *testing.T) {
 	v := evalSrc(t, `
 val is 10 named myVal from myVal as i64, other as string
-doubled is self.val + self.val
-compared is self.val > 5`)
+doubled is val + val
+compared is val > 5`)
 	doubled := getField(t, v, "doubled")
 	if doubled.Kind != KindInt || doubled.Int.Int64() != 20 {
 		t.Errorf("doubled: want 20, got %v", doubled)
@@ -415,7 +415,7 @@ func TestEvalConversion(t *testing.T) {
 func TestEvalFunction(t *testing.T) {
 	v := evalSrc(t, `
 add is function a as i32, b as i32 returns i32 { a + b }
-result is self.add(3, 4)`)
+result is add(3, 4)`)
 	r := getField(t, v, "result")
 	if r.Int.Int64() != 7 {
 		t.Errorf("want 7, got %d", r.Int.Int64())
@@ -425,8 +425,8 @@ result is self.add(3, 4)`)
 func TestEvalFunctionDefault(t *testing.T) {
 	v := evalSrc(t, `
 greet is function name as string default "world" returns string { "Hello, " ++ name }
-a is self.greet()
-b is self.greet("UZON")`)
+a is greet()
+b is greet("UZON")`)
 	a := getField(t, v, "a")
 	if a.Str != "Hello, world" {
 		t.Errorf("a: want \"Hello, world\", got %q", a.Str)
@@ -442,7 +442,7 @@ b is self.greet("UZON")`)
 func TestEvalStdLen(t *testing.T) {
 	v := evalSrc(t, `
 items is [ 1, 2, 3 ]
-n is std.len(self.items)`)
+n is std.len(items)`)
 	n := getField(t, v, "n")
 	if n.Int.Int64() != 3 {
 		t.Errorf("want 3, got %d", n.Int.Int64())
@@ -452,7 +452,7 @@ n is std.len(self.items)`)
 func TestEvalStdMap(t *testing.T) {
 	v := evalSrc(t, `
 nums are 1, 2, 3
-doubled is std.map(self.nums, function n as i64 returns i64 { n * 2 })`)
+doubled is std.map(nums, function n as i64 returns i64 { n * 2 })`)
 	d := getField(t, v, "doubled")
 	if len(d.List.Elements) != 3 {
 		t.Fatalf("want 3 elements, got %d", len(d.List.Elements))
@@ -465,7 +465,7 @@ doubled is std.map(self.nums, function n as i64 returns i64 { n * 2 })`)
 func TestEvalStdFilter(t *testing.T) {
 	v := evalSrc(t, `
 nums are 1, 2, 3, 4, 5
-evens is std.filter(self.nums, function n as i64 returns bool { n % 2 is 0 })`)
+evens is std.filter(nums, function n as i64 returns bool { n % 2 is 0 })`)
 	e := getField(t, v, "evens")
 	if len(e.List.Elements) != 2 {
 		t.Errorf("want 2 elements, got %d", len(e.List.Elements))
@@ -475,7 +475,7 @@ evens is std.filter(self.nums, function n as i64 returns bool { n % 2 is 0 })`)
 func TestEvalStdReduce(t *testing.T) {
 	v := evalSrc(t, `
 nums are 1, 2, 3, 4, 5
-total is std.reduce(self.nums, 0, function acc as i64, n as i64 returns i64 { acc + n })`)
+total is std.reduce(nums, 0, function acc as i64, n as i64 returns i64 { acc + n })`)
 	total := getField(t, v, "total")
 	if total.Int.Int64() != 15 {
 		t.Errorf("want 15, got %d", total.Int.Int64())
@@ -485,7 +485,7 @@ total is std.reduce(self.nums, 0, function acc as i64, n as i64 returns i64 { ac
 func TestEvalStdValues(t *testing.T) {
 	v := evalSrc(t, `
 data is { a is 1, b is "hi" }
-result is std.values(self.data)`)
+result is std.values(data)`)
 	result := getField(t, v, "result")
 	if result.Kind != KindTuple {
 		t.Fatalf("want tuple, got %s", result.Kind)
@@ -542,7 +542,7 @@ func TestEvalStdTrim(t *testing.T) {
 func TestEvalStdSort(t *testing.T) {
 	v := evalSrc(t, `
 nums are 3, 1, 4, 1, 5
-sorted is std.sort(self.nums, function a as i64, b as i64 returns bool { a < b })`)
+sorted is std.sort(nums, function a as i64, b as i64 returns bool { a < b })`)
 	s := getField(t, v, "sorted")
 	if s.Kind != KindList || len(s.List.Elements) != 5 {
 		t.Fatalf("want list of 5, got %s len=%d", s.Kind, len(s.List.Elements))
@@ -565,7 +565,7 @@ func TestEvalEquality(t *testing.T) {
 	v := evalSrc(t, `
 a is [ 1, 2, 3 ]
 b is [ 1, 2, 3 ]
-eq is self.a is self.b`)
+eq is a is b`)
 	eq := getField(t, v, "eq")
 	if !eq.Bool {
 		t.Error("want true for deep equality")
@@ -639,7 +639,7 @@ func TestEvalNumericTypeMismatch(t *testing.T) {
 	p := ast.NewParser([]byte(`
 a is 5 as i32
 b is 10 as u8
-result is self.a >= self.b`), "test.uzon")
+result is a >= b`), "test.uzon")
 	doc, err := p.Parse()
 	if err != nil {
 		t.Fatal(err)
@@ -655,7 +655,7 @@ func TestEvalUntypedAdoptsThroughBinding(t *testing.T) {
 	v := evalSrc(t, `
 count is 5
 max is 10 as u8
-ok is self.count >= self.max`)
+ok is count >= max`)
 	ok := getField(t, v, "ok")
 	if ok.Kind != KindBool || ok.Bool {
 		t.Errorf("want false (5 >= 10), got %v", ok)

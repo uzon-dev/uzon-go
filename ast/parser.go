@@ -156,7 +156,7 @@ func (p *Parser) parseBinding() *Binding {
 }
 
 // parseName reads an identifier name.
-// Also allows contextual keywords "env" and "self" as binding names.
+// Also allows the contextual keyword "env" as a binding name.
 func (p *Parser) parseName() string {
 	if p.at(token.Ident) {
 		name := p.cur.Literal
@@ -164,7 +164,7 @@ func (p *Parser) parseName() string {
 		return name
 	}
 	// Allow contextual keywords as binding names (e.g. "env is ...")
-	if p.at(token.Env) || p.at(token.Self) {
+	if p.at(token.Env) {
 		name := p.cur.Literal
 		p.advance()
 		return name
@@ -218,7 +218,7 @@ func (p *Parser) isBindingStart() bool {
 		return true
 	}
 	// Contextual keywords as binding names.
-	if (p.cur.Type == token.Env || p.cur.Type == token.Self) && (p.peek.Type == token.Is || p.peek.Type == token.Are) {
+	if p.cur.Type == token.Env && (p.peek.Type == token.Is || p.peek.Type == token.Are) {
 		return true
 	}
 	return false

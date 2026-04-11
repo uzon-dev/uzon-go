@@ -158,7 +158,7 @@ func TestUnmarshalWithComputation(t *testing.T) {
 	var c Config
 	err := Unmarshal([]byte(`
 base is 21
-double is self.base * 2`), &c)
+double is base * 2`), &c)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -172,7 +172,7 @@ func TestUnmarshalOrElse(t *testing.T) {
 		Port int `uzon:"port"`
 	}
 	var c Config
-	err := Unmarshal([]byte(`port is self.missing_port or else 8080`), &c)
+	err := Unmarshal([]byte(`port is missing_port or else 8080`), &c)
 	if err != nil {
 		t.Fatal(err)
 	}
