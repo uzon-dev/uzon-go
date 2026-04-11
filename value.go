@@ -146,6 +146,23 @@ func (s *StructValue) Set(name string, v *Value) {
 	s.Fields = append(s.Fields, Field{Name: name, Value: v})
 }
 
+// Delete removes a field by name. Returns true if the field was found and removed.
+func (s *StructValue) Delete(name string) bool {
+	if s.fieldIndex == nil {
+		s.buildIndex()
+	}
+	idx, ok := s.fieldIndex[name]
+	if !ok {
+		return false
+	}
+	s.Fields = append(s.Fields[:idx], s.Fields[idx+1:]...)
+	delete(s.fieldIndex, name)
+	for i := idx; i < len(s.Fields); i++ {
+		s.fieldIndex[s.Fields[i].Name] = i
+	}
+	return true
+}
+
 func (s *StructValue) buildIndex() {
 	s.fieldIndex = make(map[string]int, len(s.Fields))
 	for i, f := range s.Fields {
@@ -164,6 +181,21 @@ type TupleValue struct {
 type ListValue struct {
 	Elements    []*Value
 	ElementType *TypeInfo // type of elements, nil if untyped
+}
+
+// Push appends elements to the end of the list.
+func (l *ListValue) Push(elems ...*Value) {
+	l.Elements = append(l.Elements, elems...)
+}
+
+// Pop removes and returns the last element. Returns (nil, false) if empty.
+func (l *ListValue) Pop() (*Value, bool) {
+	if len(l.Elements) == 0 {
+		return nil, false
+	}
+	last := l.Elements[len(l.Elements)-1]
+	l.Elements = l.Elements[:len(l.Elements)-1]
+	return last, true
 }
 
 // EnumValue represents a UZON enum — a named variant chosen from a

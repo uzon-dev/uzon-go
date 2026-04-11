@@ -6,6 +6,7 @@ package uzon
 import (
 	"fmt"
 	"math"
+	"math/big"
 	"strconv"
 	"strings"
 )
@@ -173,6 +174,246 @@ func Merge(a, b *Value) (*Value, error) {
 		result.Set(f.Name, f.Value)
 	}
 	return &Value{Kind: KindStruct, Struct: result}, nil
+}
+
+// --- DeepMerge ---
+
+// DeepMerge returns a new struct with all fields from a, deep-merged with fields from b.
+// When both a and b have a field with the same name and both values are structs,
+// the values are recursively deep-merged. Otherwise, b's value takes precedence.
+// Both operands must be KindStruct.
+func DeepMerge(a, b *Value) (*Value, error) {
+	if a.Kind != KindStruct || b.Kind != KindStruct {
+		return nil, fmt.Errorf("DeepMerge requires struct operands, got %s and %s", a.Kind, b.Kind)
+	}
+	result := &StructValue{}
+	for _, f := range a.Struct.Fields {
+		result.Set(f.Name, Clone(f.Value))
+	}
+	for _, f := range b.Struct.Fields {
+		existing := result.Get(f.Name)
+		if existing != nil && existing.Kind == KindStruct && f.Value.Kind == KindStruct {
+			merged, err := DeepMerge(existing, f.Value)
+			if err != nil {
+				return nil, err
+			}
+			result.Set(f.Name, merged)
+		} else {
+			result.Set(f.Name, Clone(f.Value))
+		}
+	}
+	return &Value{Kind: KindStruct, Struct: result}, nil
+}
+
+// --- SetPath ---
+
+// SetPath sets the nested value at the given dot-separated path.
+// If val is not already a *Value, it is auto-wrapped using the same rules as Bind.
+// Intermediate path segments must already exist. Struct fields are created if
+// they don't exist at the leaf level.
+//
+//	v.SetPath("server.host", "newhost")
+//	v.SetPath("items.0", uzon.Int(99))
+func (v *Value) SetPath(path string, val any) error {
+	var target *Value
+	if vp, ok := val.(*Value); ok {
+		target = vp
+	} else if val == nil {
+		target = Null()
+	} else {
+		var err error
+		target, err = ValueOf(val)
+		if err != nil {
+			return fmt.Errorf("SetPath: %w", err)
+		}
+	}
+
+	if path == "" {
+		return fmt.Errorf("SetPath: empty path")
+	}
+
+	parts := strings.Split(path, ".")
+	cur := v
+	for _, p := range parts[:len(parts)-1] {
+		if cur == nil {
+			return fmt.Errorf("SetPath: nil value at path segment %q", p)
+		}
+		for cur.Kind == KindTaggedUnion {
+			cur = cur.TaggedUnion.Inner
+		}
+		for cur.Kind == KindUnion {
+			cur = cur.Union.Inner
+		}
+
+		switch cur.Kind {
+		case KindStruct:
+			next := cur.Struct.Get(p)
+			if next == nil {
+				return fmt.Errorf("SetPath: field %q not found", p)
+			}
+			cur = next
+		case KindTuple:
+			idx, err := strconv.Atoi(p)
+			if err != nil || idx < 0 || idx >= len(cur.Tuple.Elements) {
+				return fmt.Errorf("SetPath: invalid tuple index %q", p)
+			}
+			cur = cur.Tuple.Elements[idx]
+		case KindList:
+			idx, err := strconv.Atoi(p)
+			if err != nil || idx < 0 || idx >= len(cur.List.Elements) {
+				return fmt.Errorf("SetPath: invalid list index %q", p)
+			}
+			cur = cur.List.Elements[idx]
+		default:
+			return fmt.Errorf("SetPath: cannot traverse %s at %q", cur.Kind, p)
+		}
+	}
+
+	last := parts[len(parts)-1]
+	for cur.Kind == KindTaggedUnion {
+		cur = cur.TaggedUnion.Inner
+	}
+	for cur.Kind == KindUnion {
+		cur = cur.Union.Inner
+	}
+
+	switch cur.Kind {
+	case KindStruct:
+		cur.Struct.Set(last, target)
+	case KindTuple:
+		idx, err := strconv.Atoi(last)
+		if err != nil || idx < 0 || idx >= len(cur.Tuple.Elements) {
+			return fmt.Errorf("SetPath: invalid tuple index %q", last)
+		}
+		cur.Tuple.Elements[idx] = target
+	case KindList:
+		idx, err := strconv.Atoi(last)
+		if err != nil || idx < 0 || idx >= len(cur.List.Elements) {
+			return fmt.Errorf("SetPath: invalid list index %q", last)
+		}
+		cur.List.Elements[idx] = target
+	default:
+		return fmt.Errorf("SetPath: cannot set on %s", cur.Kind)
+	}
+	return nil
+}
+
+// --- Clone ---
+
+// Clone returns a deep copy of the value tree.
+// The cloned value is completely independent of the original.
+// TypeInfo is shared (read-only). Functions are shared (closures).
+func Clone(v *Value) *Value {
+	if v == nil {
+		return nil
+	}
+	c := &Value{
+		Kind:       v.Kind,
+		Type:       v.Type,
+		Adoptable:  v.Adoptable,
+		Bool:       v.Bool,
+		FloatIsNaN: v.FloatIsNaN,
+		Str:        v.Str,
+	}
+	switch v.Kind {
+	case KindInt:
+		c.Int = new(big.Int).Set(v.Int)
+	case KindFloat:
+		if v.Float != nil {
+			c.Float = new(big.Float).Copy(v.Float)
+		}
+	case KindStruct:
+		fields := make([]Field, len(v.Struct.Fields))
+		for i, f := range v.Struct.Fields {
+			fields[i] = Field{Name: f.Name, Value: Clone(f.Value)}
+		}
+		c.Struct = &StructValue{Fields: fields}
+	case KindTuple:
+		elems := make([]*Value, len(v.Tuple.Elements))
+		for i, e := range v.Tuple.Elements {
+			elems[i] = Clone(e)
+		}
+		c.Tuple = &TupleValue{Elements: elems}
+	case KindList:
+		elems := make([]*Value, len(v.List.Elements))
+		for i, e := range v.List.Elements {
+			elems[i] = Clone(e)
+		}
+		c.List = &ListValue{Elements: elems, ElementType: v.List.ElementType}
+	case KindEnum:
+		variants := make([]string, len(v.Enum.Variants))
+		copy(variants, v.Enum.Variants)
+		c.Enum = &EnumValue{Variant: v.Enum.Variant, Variants: variants}
+	case KindUnion:
+		memberTypes := make([]*TypeInfo, len(v.Union.MemberTypes))
+		copy(memberTypes, v.Union.MemberTypes)
+		c.Union = &UnionValue{Inner: Clone(v.Union.Inner), MemberTypes: memberTypes}
+	case KindTaggedUnion:
+		variants := make([]TaggedVariant, len(v.TaggedUnion.Variants))
+		copy(variants, v.TaggedUnion.Variants)
+		c.TaggedUnion = &TaggedUnionValue{
+			Tag: v.TaggedUnion.Tag, Inner: Clone(v.TaggedUnion.Inner), Variants: variants,
+		}
+	case KindFunction:
+		c.Function = v.Function
+	}
+	return c
+}
+
+// --- Walk ---
+
+// WalkFunc is called for each value during tree traversal.
+// The path argument is the dot-separated path to the current value
+// (empty string for the root). Return a non-nil error to stop the walk.
+type WalkFunc func(path string, v *Value) error
+
+// Walk traverses the value tree depth-first, calling fn for each value.
+// Compound values (struct, list, tuple) are visited before their children.
+// Tagged unions and unions are visited, then their inner values are traversed.
+func Walk(v *Value, fn WalkFunc) error {
+	return walk("", v, fn)
+}
+
+func walk(path string, v *Value, fn WalkFunc) error {
+	if err := fn(path, v); err != nil {
+		return err
+	}
+	switch v.Kind {
+	case KindStruct:
+		for _, f := range v.Struct.Fields {
+			if err := walk(joinPath(path, f.Name), f.Value, fn); err != nil {
+				return err
+			}
+		}
+	case KindList:
+		for i, e := range v.List.Elements {
+			if err := walk(joinPath(path, strconv.Itoa(i)), e, fn); err != nil {
+				return err
+			}
+		}
+	case KindTuple:
+		for i, e := range v.Tuple.Elements {
+			if err := walk(joinPath(path, strconv.Itoa(i)), e, fn); err != nil {
+				return err
+			}
+		}
+	case KindTaggedUnion:
+		if err := walk(path, v.TaggedUnion.Inner, fn); err != nil {
+			return err
+		}
+	case KindUnion:
+		if err := walk(path, v.Union.Inner, fn); err != nil {
+			return err
+		}
+	}
+	return nil
+}
+
+func joinPath(base, segment string) string {
+	if base == "" {
+		return segment
+	}
+	return base + "." + segment
 }
 
 // --- fmt.Stringer ---

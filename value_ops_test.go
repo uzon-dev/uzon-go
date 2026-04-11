@@ -463,6 +463,139 @@ func TestEqualStruct(t *testing.T) {
 	}
 }
 
+// --- Auto-wrapping tests ---
+
+func TestAddPrimitive(t *testing.T) {
+	r, err := Add(Int(3), 7)
+	if err != nil {
+		t.Fatal(err)
+	}
+	n, _ := r.AsInt()
+	if n != 10 {
+		t.Errorf("Int(3) + 7 = %d, want 10", n)
+	}
+}
+
+func TestAddBothPrimitive(t *testing.T) {
+	r, err := Add(10, 20)
+	if err != nil {
+		t.Fatal(err)
+	}
+	n, _ := r.AsInt()
+	if n != 30 {
+		t.Errorf("10 + 20 = %d, want 30", n)
+	}
+}
+
+func TestSubPrimitive(t *testing.T) {
+	r, err := Sub(Int(10), 3)
+	if err != nil {
+		t.Fatal(err)
+	}
+	n, _ := r.AsInt()
+	if n != 7 {
+		t.Errorf("Int(10) - 3 = %d, want 7", n)
+	}
+}
+
+func TestMulPrimitive(t *testing.T) {
+	r, err := Mul(6, 7)
+	if err != nil {
+		t.Fatal(err)
+	}
+	n, _ := r.AsInt()
+	if n != 42 {
+		t.Errorf("6 * 7 = %d, want 42", n)
+	}
+}
+
+func TestDivPrimitive(t *testing.T) {
+	r, err := Div(Int(15), 4)
+	if err != nil {
+		t.Fatal(err)
+	}
+	n, _ := r.AsInt()
+	if n != 3 {
+		t.Errorf("Int(15) / 4 = %d, want 3", n)
+	}
+}
+
+func TestModPrimitive(t *testing.T) {
+	r, err := Mod(Int(17), 5)
+	if err != nil {
+		t.Fatal(err)
+	}
+	n, _ := r.AsInt()
+	if n != 2 {
+		t.Errorf("Int(17) %% 5 = %d, want 2", n)
+	}
+}
+
+func TestPowPrimitive(t *testing.T) {
+	r, err := Pow(2, 10)
+	if err != nil {
+		t.Fatal(err)
+	}
+	n, _ := r.AsInt()
+	if n != 1024 {
+		t.Errorf("2 ^ 10 = %d, want 1024", n)
+	}
+}
+
+func TestEqualPrimitive(t *testing.T) {
+	if !Equal(Int(42), 42) {
+		t.Error("Int(42) should equal 42")
+	}
+	if !Equal(String("hello"), "hello") {
+		t.Error(`String("hello") should equal "hello"`)
+	}
+	if Equal(Int(42), 43) {
+		t.Error("Int(42) should not equal 43")
+	}
+}
+
+func TestEqualToMethod(t *testing.T) {
+	v := Int(42)
+	if !v.EqualTo(42) {
+		t.Error("Int(42).EqualTo(42) should be true")
+	}
+	if v.EqualTo("hello") {
+		t.Error("Int(42).EqualTo(\"hello\") should be false")
+	}
+}
+
+func TestComparePrimitive(t *testing.T) {
+	cmp, err := Compare(Int(3), 5)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if cmp >= 0 {
+		t.Errorf("Compare(Int(3), 5) = %d, want < 0", cmp)
+	}
+}
+
+func TestConcatPrimitive(t *testing.T) {
+	r, err := Concat("hello", " world")
+	if err != nil {
+		t.Fatal(err)
+	}
+	s, _ := r.AsString()
+	if s != "hello world" {
+		t.Errorf("got %q, want %q", s, "hello world")
+	}
+}
+
+func TestContainsPrimitive(t *testing.T) {
+	list := ListOf(1, 2, 3)
+	found, err := Contains(list, 2)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !found {
+		t.Error("expected to find 2 in [1,2,3]")
+	}
+}
+
 func TestEqualList(t *testing.T) {
 	a := NewList([]*Value{Int(1), Int(2)}, nil)
 	b := NewList([]*Value{Int(1), Int(2)}, nil)
