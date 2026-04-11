@@ -305,6 +305,10 @@ func (ev *Evaluator) evalCall(e *ast.CallExpr, scope *Scope) (*Value, error) {
 		if err != nil {
 			return nil, err
 		}
+		// §3.1: undefined as argument is a runtime error
+		if v.Kind == KindUndefined || isUnresolvedIdent(v) {
+			return nil, fmt.Errorf("undefined argument in function call")
+		}
 		args = append(args, v)
 	}
 
