@@ -108,7 +108,7 @@ func (e *emitter) emitValue(v *Value) {
 		e.emitList(v)
 	case KindEnum:
 		if e.definedTypes != nil && v.Type != nil && v.Type.Name != "" && e.definedTypes[v.Type.Name] {
-			e.sb.WriteString(v.Enum.Variant)
+			e.emitIdentName(v.Enum.Variant)
 			e.sb.WriteString(" as ")
 			e.sb.WriteString(v.Type.Name)
 		} else {
@@ -122,7 +122,7 @@ func (e *emitter) emitValue(v *Value) {
 			e.sb.WriteString(" as ")
 			e.sb.WriteString(v.Type.Name)
 			e.sb.WriteString(" named ")
-			e.sb.WriteString(v.TaggedUnion.Tag)
+			e.emitIdentName(v.TaggedUnion.Tag)
 		} else {
 			e.emitTaggedUnion(v)
 		}
@@ -133,7 +133,7 @@ func (e *emitter) emitValue(v *Value) {
 	// Emit non-default type annotation (§6)
 	if v.Type != nil && v.Type.BaseType != "" &&
 		v.Kind != KindEnum && v.Kind != KindTaggedUnion && v.Kind != KindUnion {
-		if v.Type.Name == "" && v.Type.Name != "__ident__" && needsTypeAnnotation(v) {
+		if v.Type.Name != "__ident__" && needsTypeAnnotation(v) {
 			e.sb.WriteString(" as ")
 			e.sb.WriteString(v.Type.BaseType)
 		}
@@ -210,6 +210,21 @@ func (e *emitter) emitStruct(v *Value) {
 	e.indent--
 	e.writeIndent()
 	e.sb.WriteByte('}')
+}
+
+// emitIdentName writes an identifier (enum variant, tagged union tag, etc.)
+// with quoting or keyword escaping if necessary.
+func (e *emitter) emitIdentName(name string) {
+	if needsQuoting(name) {
+		e.sb.WriteByte('\'')
+		e.sb.WriteString(name)
+		e.sb.WriteByte('\'')
+	} else if isKeyword(name) {
+		e.sb.WriteByte('@')
+		e.sb.WriteString(name)
+	} else {
+		e.sb.WriteString(name)
+	}
 }
 
 // emitFieldName writes a binding name, quoting or escaping if necessary (§2.5, §2.6).
@@ -308,13 +323,13 @@ func (e *emitter) emitList(v *Value) {
 // emitEnum writes an enum definition: "variant from v1, v2, ..." (§3.4).
 // The "called TypeName" is handled by emitFieldBinding.
 func (e *emitter) emitEnum(v *Value) {
-	e.sb.WriteString(v.Enum.Variant)
+	e.emitIdentName(v.Enum.Variant)
 	e.sb.WriteString(" from ")
 	for i, variant := range v.Enum.Variants {
 		if i > 0 {
 			e.sb.WriteString(", ")
 		}
-		e.sb.WriteString(variant)
+		e.emitIdentName(variant)
 	}
 }
 
@@ -339,14 +354,14 @@ func (e *emitter) emitUnion(v *Value) {
 func (e *emitter) emitTaggedUnion(v *Value) {
 	e.emitValue(v.TaggedUnion.Inner)
 	e.sb.WriteString(" named ")
-	e.sb.WriteString(v.TaggedUnion.Tag)
+	e.emitIdentName(v.TaggedUnion.Tag)
 	if len(v.TaggedUnion.Variants) > 0 {
 		e.sb.WriteString(" from ")
 		for i, variant := range v.TaggedUnion.Variants {
 			if i > 0 {
 				e.sb.WriteString(", ")
 			}
-			e.sb.WriteString(variant.Name)
+			e.emitIdentName(variant.Name)
 			e.sb.WriteString(" as ")
 			if variant.Type != nil {
 				typ := variant.Type.BaseType

@@ -258,6 +258,9 @@ func (ev *Evaluator) stdReduce(evalArgs func() ([]*Value, error), scope *Scope) 
 	if list.Kind != KindList {
 		return nil, fmt.Errorf("std.reduce: first argument must be list")
 	}
+	if fn.Kind != KindFunction {
+		return nil, fmt.Errorf("std.reduce: third argument must be function")
+	}
 	// §5.16.2: initial value type must match function return type
 	if fn.Kind == KindFunction && fn.Function.ReturnType != nil {
 		retBase := fn.Function.ReturnType.BaseType
