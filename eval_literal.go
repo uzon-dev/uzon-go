@@ -130,7 +130,7 @@ func (ev *Evaluator) accessMember(obj *Value, member string) (*Value, error) {
 	case KindUndefined:
 		return Undefined(), nil
 	case KindNull:
-		return nil, fmt.Errorf("member access on null")
+		return nil, fmt.Errorf("type error: member access on null")
 	default:
 		return Undefined(), nil
 	}
