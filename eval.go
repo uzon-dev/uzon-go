@@ -37,7 +37,7 @@ func (e *PosError) Unwrap() error {
 }
 
 // Scope represents a lexical scope for binding resolution.
-// The exclude field implements the self-exclusion rule (§3.8):
+// The exclude field implements the self-exclusion rule (§5.12):
 // the binding currently being evaluated cannot see itself.
 type Scope struct {
 	bindings map[string]*Value
@@ -162,10 +162,8 @@ func (ev *Evaluator) evalBindings(bindings []*ast.Binding, scope *Scope) (*Value
 				return nil, &PosError{Pos: b.Position, Msg: fmt.Sprintf("duplicate binding %q", b.Name)}
 			}
 		}
-		// Standalone self/env/undefined are errors
+		// Standalone env/undefined are errors
 		switch b.Value.(type) {
-		case *ast.SelfExpr:
-			return nil, &PosError{Pos: b.Value.Pos(), Msg: "standalone self is not a value"}
 		case *ast.EnvExpr:
 			return nil, &PosError{Pos: b.Value.Pos(), Msg: "standalone env is not a value"}
 		case *ast.UndefinedExpr:
@@ -175,7 +173,7 @@ func (ev *Evaluator) evalBindings(bindings []*ast.Binding, scope *Scope) (*Value
 		bindingByName[b.Name] = b
 	}
 
-	// Build dependency graph from self.X references
+	// Build dependency graph from identifier references
 	deps := make(map[string][]string, len(bindings))
 	for _, b := range bindings {
 		refs := collectBindingDeps(b.Value)
@@ -210,13 +208,9 @@ func (ev *Evaluator) evalBindings(bindings []*ast.Binding, scope *Scope) (*Value
 			}
 		}
 
-		// Bare identifier that was not resolved by "as"/"from" is an error
+		// Bare identifier that was not resolved by "as"/"from" is undefined (§5.12)
 		if v.Type != nil && v.Type.Name == "__ident__" {
-			msg := fmt.Sprintf("binding %q: %q is not defined", b.Name, v.Str)
-			if hint := identHint(v.Str); hint != "" {
-				msg += fmt.Sprintf("; did you mean %s?", hint)
-			}
-			return nil, &PosError{Pos: b.Position, Msg: msg}
+			v = Undefined()
 		}
 
 		// Handle "called" type naming (§6)
@@ -260,7 +254,7 @@ func (ev *Evaluator) evalBindings(bindings []*ast.Binding, scope *Scope) (*Value
 		if f.Value.Kind == KindFunction {
 			fe, ok := f.Value.Function.Body.(*ast.FunctionExpr)
 			if ok {
-				refs := collectSelfCallRefs(fe)
+				refs := collectCallRefs(fe)
 				funcRefs[f.Name] = refs
 				funcPos[f.Name] = fe.Pos()
 			}
@@ -356,8 +350,6 @@ func (ev *Evaluator) evalExprSwitch(expr ast.Expr, scope *Scope) (*Value, error)
 		return ev.evalIdent(e, scope)
 	case *ast.UndefinedExpr:
 		return Undefined(), nil
-	case *ast.SelfExpr:
-		return ev.evalSelf(scope), nil
 	case *ast.EnvExpr:
 		return ev.evalEnvObj(), nil
 	case *ast.MemberExpr:
@@ -409,12 +401,3 @@ func (ev *Evaluator) evalExprSwitch(expr ast.Expr, scope *Scope) (*Value, error)
 	}
 }
 
-// identHint returns a suggestion when a bare identifier is a case variant
-// of a UZON keyword.
-func identHint(name string) string {
-	lower := strings.ToLower(name)
-	if lower != name && token.IsKeyword(lower) {
-		return lower
-	}
-	return ""
-}

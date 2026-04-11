@@ -63,8 +63,7 @@ const (
 	Case // case
 	When // when
 
-	// Keywords — references (§5.7, §5.8, §7).
-	Self   // self   (self-reference within struct)
+	// Keywords — references (§5.13, §7).
 	Env    // env    (environment variable access)
 	Struct // struct (file import)
 	In     // in     (membership test)
@@ -75,6 +74,7 @@ const (
 	Default  // default
 
 	// Keywords — reserved for future use.
+	Self   // self
 	Lazy   // lazy
 	TypeKw // type
 
@@ -124,9 +124,9 @@ var typeNames = map[Type]string{
 	To: "to", Of: "of",
 	And: "and", Or: "or", Not: "not",
 	If: "if", Then: "then", Else: "else", Case: "case", When: "when",
-	Self: "self", Env: "env", Struct: "struct", In: "in",
+	Env: "env", Struct: "struct", In: "in",
 	Function: "function", Returns: "returns", Default: "default",
-	Lazy: "lazy", TypeKw: "type",
+	Self: "self", Lazy: "lazy", TypeKw: "type",
 	IsNot: "is not", IsNamed: "is named", IsNotNamed: "is not named", OrElse: "or else",
 	Plus: "+", Minus: "-", Star: "*", Slash: "/", Percent: "%", Caret: "^",
 	PlusPlus: "++", StarStar: "**",
@@ -152,9 +152,9 @@ var Keywords = map[string]Type{
 	"to": To, "of": Of,
 	"and": And, "or": Or, "not": Not,
 	"if": If, "then": Then, "else": Else, "case": Case, "when": When,
-	"self": Self, "env": Env, "struct": Struct, "in": In,
+	"env": Env, "struct": Struct, "in": In,
 	"function": Function, "returns": Returns, "default": Default,
-	"lazy": Lazy, "type": TypeKw,
+	"self": Self, "lazy": Lazy, "type": TypeKw,
 }
 
 // IsKeyword reports whether s is a reserved UZON keyword.

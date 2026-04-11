@@ -38,13 +38,13 @@ func (ev *Evaluator) evalStdCall(name string, args []ast.Expr, scope *Scope) (*V
 	case "values":
 		return ev.stdValues(evalArgs)
 	case "map":
-		return ev.stdMap(evalArgs, scope)
+		return ev.stdMap(evalArgs)
 	case "filter":
-		return ev.stdFilter(evalArgs, scope)
+		return ev.stdFilter(evalArgs)
 	case "reduce":
-		return ev.stdReduce(evalArgs, scope)
+		return ev.stdReduce(evalArgs)
 	case "sort":
-		return ev.stdSort(evalArgs, scope)
+		return ev.stdSort(evalArgs)
 	case "isNan":
 		return ev.stdIsNan(evalArgs)
 	case "isInf":
@@ -186,7 +186,7 @@ func (ev *Evaluator) stdValues(evalArgs func() ([]*Value, error)) (*Value, error
 	return NewTuple(elems...), nil
 }
 
-func (ev *Evaluator) stdMap(evalArgs func() ([]*Value, error), scope *Scope) (*Value, error) {
+func (ev *Evaluator) stdMap(evalArgs func() ([]*Value, error)) (*Value, error) {
 	vals, err := evalArgs()
 	if err != nil {
 		return nil, err
@@ -203,7 +203,7 @@ func (ev *Evaluator) stdMap(evalArgs func() ([]*Value, error), scope *Scope) (*V
 	}
 	var results []*Value
 	for _, elem := range list.List.Elements {
-		r, err := ev.callFunction(fn, []*Value{elem}, scope)
+		r, err := ev.callFunction(fn, []*Value{elem})
 		if err != nil {
 			return nil, err
 		}
@@ -212,7 +212,7 @@ func (ev *Evaluator) stdMap(evalArgs func() ([]*Value, error), scope *Scope) (*V
 	return NewList(results, nil), nil
 }
 
-func (ev *Evaluator) stdFilter(evalArgs func() ([]*Value, error), scope *Scope) (*Value, error) {
+func (ev *Evaluator) stdFilter(evalArgs func() ([]*Value, error)) (*Value, error) {
 	vals, err := evalArgs()
 	if err != nil {
 		return nil, err
@@ -232,7 +232,7 @@ func (ev *Evaluator) stdFilter(evalArgs func() ([]*Value, error), scope *Scope) 
 	}
 	var results []*Value
 	for _, elem := range list.List.Elements {
-		r, err := ev.callFunction(fn, []*Value{elem}, scope)
+		r, err := ev.callFunction(fn, []*Value{elem})
 		if err != nil {
 			return nil, err
 		}
@@ -246,7 +246,7 @@ func (ev *Evaluator) stdFilter(evalArgs func() ([]*Value, error), scope *Scope) 
 	return NewList(results, list.List.ElementType), nil
 }
 
-func (ev *Evaluator) stdReduce(evalArgs func() ([]*Value, error), scope *Scope) (*Value, error) {
+func (ev *Evaluator) stdReduce(evalArgs func() ([]*Value, error)) (*Value, error) {
 	vals, err := evalArgs()
 	if err != nil {
 		return nil, err
@@ -283,7 +283,7 @@ func (ev *Evaluator) stdReduce(evalArgs func() ([]*Value, error), scope *Scope) 
 	}
 	acc := initial
 	for _, elem := range list.List.Elements {
-		r, err := ev.callFunction(fn, []*Value{acc, elem}, scope)
+		r, err := ev.callFunction(fn, []*Value{acc, elem})
 		if err != nil {
 			return nil, err
 		}
@@ -292,7 +292,7 @@ func (ev *Evaluator) stdReduce(evalArgs func() ([]*Value, error), scope *Scope) 
 	return acc, nil
 }
 
-func (ev *Evaluator) stdSort(evalArgs func() ([]*Value, error), scope *Scope) (*Value, error) {
+func (ev *Evaluator) stdSort(evalArgs func() ([]*Value, error)) (*Value, error) {
 	vals, err := evalArgs()
 	if err != nil {
 		return nil, err
@@ -320,7 +320,7 @@ func (ev *Evaluator) stdSort(evalArgs func() ([]*Value, error), scope *Scope) (*
 		if sortErr != nil {
 			return false
 		}
-		r, err := ev.callFunction(fn, []*Value{sorted[i], sorted[j]}, scope)
+		r, err := ev.callFunction(fn, []*Value{sorted[i], sorted[j]})
 		if err != nil {
 			sortErr = err
 			return false

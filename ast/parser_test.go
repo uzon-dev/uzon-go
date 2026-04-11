@@ -194,18 +194,23 @@ func TestParseAsToChain(t *testing.T) {
 	}
 }
 
-func TestParseSelfRef(t *testing.T) {
-	doc := mustParse(t, `y is self.x + 1`)
-	be, ok := doc.Bindings[0].Value.(*BinaryExpr)
-	if !ok {
-		t.Fatalf("expected BinaryExpr, got %T", doc.Bindings[0].Value)
+func TestParseScopeRef(t *testing.T) {
+	doc := mustParse(t, `
+x is 10
+y is x + 1`)
+	if len(doc.Bindings) != 2 {
+		t.Fatalf("expected 2 bindings, got %d", len(doc.Bindings))
 	}
-	me, ok := be.Left.(*MemberExpr)
+	be, ok := doc.Bindings[1].Value.(*BinaryExpr)
 	if !ok {
-		t.Fatalf("expected MemberExpr, got %T", be.Left)
+		t.Fatalf("expected BinaryExpr, got %T", doc.Bindings[1].Value)
 	}
-	if me.Member != "x" {
-		t.Errorf("expected member 'x', got %q", me.Member)
+	id, ok := be.Left.(*IdentExpr)
+	if !ok {
+		t.Fatalf("expected IdentExpr, got %T", be.Left)
+	}
+	if id.Name != "x" {
+		t.Errorf("expected ident 'x', got %q", id.Name)
 	}
 }
 
@@ -221,10 +226,15 @@ func TestParseAreBinding(t *testing.T) {
 }
 
 func TestParseWithExpr(t *testing.T) {
-	doc := mustParse(t, `dev is self.base with { debug is true }`)
-	we, ok := doc.Bindings[0].Value.(*WithExpr)
+	doc := mustParse(t, `
+base is { host is "localhost", port is 8080 }
+dev is base with { debug is true }`)
+	if len(doc.Bindings) < 2 {
+		t.Fatalf("expected at least 2 bindings, got %d", len(doc.Bindings))
+	}
+	we, ok := doc.Bindings[1].Value.(*WithExpr)
 	if !ok {
-		t.Fatalf("expected WithExpr, got %T", doc.Bindings[0].Value)
+		t.Fatalf("expected WithExpr, got %T", doc.Bindings[1].Value)
 	}
 	if len(we.Override.Fields) != 1 {
 		t.Errorf("expected 1 override field, got %d", len(we.Override.Fields))
@@ -232,8 +242,10 @@ func TestParseWithExpr(t *testing.T) {
 }
 
 func TestParseExtendsExpr(t *testing.T) {
-	doc := mustParse(t, `secure is self.base extends { tls is true }`)
-	ee, ok := doc.Bindings[0].Value.(*ExtendsExpr)
+	doc := mustParse(t, `
+base is { host is "localhost" }
+secure is base extends { tls is true }`)
+	ee, ok := doc.Bindings[1].Value.(*ExtendsExpr)
 	if !ok {
 		t.Fatalf("expected ExtendsExpr, got %T", doc.Bindings[0].Value)
 	}
@@ -301,7 +313,7 @@ func TestParseStructImport(t *testing.T) {
 }
 
 func TestParseOrElse(t *testing.T) {
-	doc := mustParse(t, `x is self.y or else 0`)
+	doc := mustParse(t, `x is y or else 0`)
 	be, ok := doc.Bindings[0].Value.(*BinaryExpr)
 	if !ok {
 		t.Fatalf("expected BinaryExpr, got %T", doc.Bindings[0].Value)
@@ -312,10 +324,12 @@ func TestParseOrElse(t *testing.T) {
 }
 
 func TestParseOfExpr(t *testing.T) {
-	doc := mustParse(t, `port is of self.config`)
-	_, ok := doc.Bindings[0].Value.(*OfExpr)
+	doc := mustParse(t, `
+config is { port is 8080 }
+port is of config`)
+	_, ok := doc.Bindings[1].Value.(*OfExpr)
 	if !ok {
-		t.Fatalf("expected OfExpr, got %T", doc.Bindings[0].Value)
+		t.Fatalf("expected OfExpr, got %T", doc.Bindings[1].Value)
 	}
 }
 

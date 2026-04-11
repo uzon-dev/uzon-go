@@ -87,36 +87,13 @@ func (ev *Evaluator) evalIdent(e *ast.IdentExpr, scope *Scope) (*Value, error) {
 	if v, ok := scope.get(e.Name); ok {
 		return v, nil
 	}
-	// Bare identifier: may be an enum variant; defer resolution to "as EnumType"
+	// §5.12: bare identifier not in scope.
+	// Carries the name for deferred enum variant resolution via "as EnumType".
+	// Treated as undefined in non-enum contexts (or else, binding level, etc.).
 	return &Value{Kind: KindString, Str: e.Name, Type: &TypeInfo{Name: "__ident__"}}, nil
 }
 
-// evalSelf builds a virtual struct from all bindings visible in the scope chain (§5.7).
-func (ev *Evaluator) evalSelf(scope *Scope) *Value {
-	sv := &StructValue{Fields: nil, fieldIndex: make(map[string]int)}
-	ev.collectScopeBindings(scope, sv)
-	return &Value{Kind: KindStruct, Struct: sv}
-}
-
-func (ev *Evaluator) collectScopeBindings(scope *Scope, sv *StructValue) {
-	if scope == nil {
-		return
-	}
-	ev.collectScopeBindings(scope.parent, sv)
-	for name, val := range scope.bindings {
-		if name == scope.exclude {
-			continue
-		}
-		if _, exists := sv.fieldIndex[name]; exists {
-			sv.Fields[sv.fieldIndex[name]].Value = val
-		} else {
-			sv.fieldIndex[name] = len(sv.Fields)
-			sv.Fields = append(sv.Fields, Field{Name: name, Value: val})
-		}
-	}
-}
-
-// evalEnvObj builds a virtual struct from environment variables (§5.8).
+// evalEnvObj builds a virtual struct from environment variables (§5.13).
 func (ev *Evaluator) evalEnvObj() *Value {
 	var fields []Field
 	for k, v := range ev.env {
@@ -132,7 +109,7 @@ func (ev *Evaluator) evalMember(e *ast.MemberExpr, scope *Scope) (*Value, error)
 	if err != nil {
 		return nil, err
 	}
-	if obj.Kind == KindUndefined {
+	if obj.Kind == KindUndefined || isUnresolvedIdent(obj) {
 		return Undefined(), nil
 	}
 	return ev.accessMember(obj, e.Member)

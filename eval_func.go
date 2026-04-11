@@ -33,7 +33,7 @@ func (ev *Evaluator) evalFunctionDef(e *ast.FunctionExpr, scope *Scope) (*Value,
 
 // callFunction invokes a user-defined function with the given arguments.
 // §3.8: maximum call depth is 256 to prevent unbounded recursion.
-func (ev *Evaluator) callFunction(fn *Value, args []*Value, scope *Scope) (*Value, error) {
+func (ev *Evaluator) callFunction(fn *Value, args []*Value) (*Value, error) {
 	const maxCallDepth = 256
 	ev.callDepth++
 	if ev.callDepth > maxCallDepth {
@@ -48,15 +48,31 @@ func (ev *Evaluator) callFunction(fn *Value, args []*Value, scope *Scope) (*Valu
 		return nil, fmt.Errorf("invalid function body")
 	}
 
+	// Fill default values for missing arguments
+	fullArgs := make([]*Value, 0, len(fe.Params))
+	fullArgs = append(fullArgs, args...)
+	for i := len(args); i < len(fe.Params); i++ {
+		if fe.Params[i].Default != nil {
+			dv, err := ev.evalExpr(fe.Params[i].Default, fv.Scope.(*Scope))
+			if err != nil {
+				return nil, err
+			}
+			fullArgs = append(fullArgs, dv)
+		}
+	}
+
+	// Create function scope and bind parameters
 	fnScope := newScope(fv.Scope.(*Scope))
 	for i, p := range fe.Params {
-		if i < len(args) {
-			arg := args[i]
+		if i < len(fullArgs) {
+			arg := fullArgs[i]
+			// §3.3: tuple shape check
 			if p.TypeExpr != nil && len(p.TypeExpr.TupleElems) > 0 && arg.Kind == KindTuple {
 				if len(p.TypeExpr.TupleElems) != len(arg.Tuple.Elements) {
 					return nil, fmt.Errorf("argument %q: expected %d-element tuple, got %d", p.Name, len(p.TypeExpr.TupleElems), len(arg.Tuple.Elements))
 				}
 			}
+			// §5: adopt parameter type for adoptable literals
 			if p.TypeExpr != nil && arg.Adoptable {
 				pti := ev.resolveTypeExpr(p.TypeExpr)
 				if pti != nil && pti.BaseType != "" {
@@ -69,16 +85,23 @@ func (ev *Evaluator) callFunction(fn *Value, args []*Value, scope *Scope) (*Valu
 					arg.Adoptable = false
 				}
 			}
-			fnScope.set(p.Name, arg)
-		} else if p.Default != nil {
-			dv, err := ev.evalExpr(p.Default, fv.Scope.(*Scope))
-			if err != nil {
-				return nil, err
+			// §6.3: nominal struct type check
+			if p.TypeExpr != nil && arg.Kind == KindStruct {
+				pti := ev.resolveTypeExpr(p.TypeExpr)
+				if pti != nil && pti.Name != "" {
+					if expectedFields, ok := ev.structShapes[pti.Name]; ok {
+						if len(arg.Struct.Fields) != len(expectedFields) {
+							return nil, fmt.Errorf("argument %q: expected %s (%d fields), got struct with %d fields",
+								p.Name, pti.Name, len(expectedFields), len(arg.Struct.Fields))
+						}
+					}
+				}
 			}
-			fnScope.set(p.Name, dv)
+			fnScope.set(p.Name, arg)
 		}
 	}
 
+	// Evaluate intermediate bindings
 	for _, b := range fe.Bindings {
 		v, err := ev.evalExpr(b.Value, fnScope)
 		if err != nil {
@@ -90,7 +113,19 @@ func (ev *Evaluator) callFunction(fn *Value, args []*Value, scope *Scope) (*Valu
 	if fe.Body == nil {
 		return nil, fmt.Errorf("function body has no return expression")
 	}
-	return ev.evalExpr(fe.Body, fnScope)
+	result, err := ev.evalExpr(fe.Body, fnScope)
+	if err != nil {
+		return nil, err
+	}
+
+	// §6.3: check function return type compatibility for named types
+	if fv.ReturnType != nil && fv.ReturnType.Name != "" {
+		if result.Type != nil && result.Type.Name != "" && result.Type.Name != fv.ReturnType.Name {
+			return nil, fmt.Errorf("function return type mismatch: expected %s, got %s", fv.ReturnType.Name, result.Type.Name)
+		}
+	}
+
+	return result, nil
 }
 
 // collectBindingDeps finds all sibling binding names referenced in an AST subtree.
@@ -98,34 +133,20 @@ func (ev *Evaluator) callFunction(fn *Value, args []*Value, scope *Scope) (*Valu
 func collectBindingDeps(expr ast.Expr) map[string]bool {
 	refs := make(map[string]bool)
 	walkExpr(expr, func(e ast.Expr) {
-		switch n := e.(type) {
-		case *ast.MemberExpr:
-			if _, ok := n.Object.(*ast.SelfExpr); ok {
-				refs[n.Member] = true
-			}
-		case *ast.IdentExpr:
+		if n, ok := e.(*ast.IdentExpr); ok {
 			refs[n.Name] = true
 		}
 	})
 	return refs
 }
 
-// collectSelfCallRefs finds self.X names that are called as functions.
-func collectSelfCallRefs(expr ast.Expr) map[string]bool {
+// collectCallRefs finds binding names that are called as functions.
+func collectCallRefs(expr ast.Expr) map[string]bool {
 	refs := make(map[string]bool)
 	walkExpr(expr, func(e ast.Expr) {
 		if ce, ok := e.(*ast.CallExpr); ok {
-			if me, ok := ce.Func.(*ast.MemberExpr); ok {
-				if _, ok := me.Object.(*ast.SelfExpr); ok {
-					refs[me.Member] = true
-				}
-			}
-			for _, arg := range ce.Args {
-				if me, ok := arg.(*ast.MemberExpr); ok {
-					if _, ok := me.Object.(*ast.SelfExpr); ok {
-						refs[me.Member] = true
-					}
-				}
+			if id, ok := ce.Func.(*ast.IdentExpr); ok {
+				refs[id.Name] = true
 			}
 		}
 	})
@@ -246,7 +267,7 @@ func (ev *Evaluator) evalInterpolatedString(e *ast.InterpolatedStringExpr, scope
 			if err != nil {
 				return nil, err
 			}
-			if v.Kind == KindUndefined {
+			if v.Kind == KindUndefined || isUnresolvedIdent(v) {
 				return nil, fmt.Errorf("undefined in string interpolation")
 			}
 			s, err := ev.convertToString(v)
@@ -277,12 +298,6 @@ func (ev *Evaluator) evalCall(e *ast.CallExpr, scope *Scope) (*Value, error) {
 		return nil, fmt.Errorf("calling non-function value (%s)", fn.Kind)
 	}
 
-	fv := fn.Function
-	fe, ok := fv.Body.(*ast.FunctionExpr)
-	if !ok {
-		return nil, fmt.Errorf("invalid function body")
-	}
-
 	// Evaluate arguments
 	args := make([]*Value, 0, len(e.Args))
 	for _, a := range e.Args {
@@ -293,80 +308,5 @@ func (ev *Evaluator) evalCall(e *ast.CallExpr, scope *Scope) (*Value, error) {
 		args = append(args, v)
 	}
 
-	// Fill default values for missing arguments
-	for i := len(args); i < len(fe.Params); i++ {
-		if fe.Params[i].Default != nil {
-			dv, err := ev.evalExpr(fe.Params[i].Default, fv.Scope.(*Scope))
-			if err != nil {
-				return nil, err
-			}
-			args = append(args, dv)
-		}
-	}
-
-	// Create function scope and bind parameters
-	fnScope := newScope(fv.Scope.(*Scope))
-	for i, p := range fe.Params {
-		if i < len(args) {
-			arg := args[i]
-			// §3.3: tuple shape check
-			if p.TypeExpr != nil && len(p.TypeExpr.TupleElems) > 0 && arg.Kind == KindTuple {
-				if len(p.TypeExpr.TupleElems) != len(arg.Tuple.Elements) {
-					return nil, fmt.Errorf("argument %q: expected %d-element tuple, got %d", p.Name, len(p.TypeExpr.TupleElems), len(arg.Tuple.Elements))
-				}
-			}
-			// §5: adopt parameter type for adoptable literals
-			if p.TypeExpr != nil && arg.Adoptable {
-				pti := ev.resolveTypeExpr(p.TypeExpr)
-				if pti != nil && pti.BaseType != "" {
-					if arg.Kind == KindInt && isIntegerType(pti.BaseType) {
-						if err := checkIntRange(arg.Int, pti.BitSize, pti.Signed); err != nil {
-							return nil, fmt.Errorf("argument %q: %w", p.Name, err)
-						}
-					}
-					arg.Type = pti
-					arg.Adoptable = false
-				}
-			}
-			// §6.3: nominal struct type check
-			if p.TypeExpr != nil && arg.Kind == KindStruct {
-				pti := ev.resolveTypeExpr(p.TypeExpr)
-				if pti != nil && pti.Name != "" {
-					if expectedFields, ok := ev.structShapes[pti.Name]; ok {
-						if len(arg.Struct.Fields) != len(expectedFields) {
-							return nil, fmt.Errorf("argument %q: expected %s (%d fields), got struct with %d fields",
-								p.Name, pti.Name, len(expectedFields), len(arg.Struct.Fields))
-						}
-					}
-				}
-			}
-			fnScope.set(p.Name, arg)
-		}
-	}
-
-	// Evaluate intermediate bindings and body
-	for _, b := range fe.Bindings {
-		v, err := ev.evalExpr(b.Value, fnScope)
-		if err != nil {
-			return nil, err
-		}
-		fnScope.set(b.Name, v)
-	}
-
-	if fe.Body == nil {
-		return nil, fmt.Errorf("function body has no return expression")
-	}
-	result, err := ev.evalExpr(fe.Body, fnScope)
-	if err != nil {
-		return nil, err
-	}
-
-	// §6.3: check function return type compatibility for named types
-	if fv.ReturnType != nil && fv.ReturnType.Name != "" {
-		if result.Type != nil && result.Type.Name != "" && result.Type.Name != fv.ReturnType.Name {
-			return nil, fmt.Errorf("function return type mismatch: expected %s, got %s", fv.ReturnType.Name, result.Type.Name)
-		}
-	}
-
-	return result, nil
+	return ev.callFunction(fn, args)
 }

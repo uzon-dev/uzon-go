@@ -37,8 +37,9 @@ func (p *Parser) parsePrimary() Expr {
 		return &UndefinedExpr{Position: pos}
 
 	case token.Self:
+		p.errorf(pos, "'self' is a reserved keyword and cannot be used; use bare identifiers instead (e.g., 'x' instead of 'self.x')")
 		p.advance()
-		return &SelfExpr{Position: pos}
+		return &UndefinedExpr{Position: pos}
 
 	case token.Env:
 		p.advance()

@@ -78,16 +78,7 @@ func (e *UndefinedExpr) Pos() token.Pos { return e.Position }
 func (e *UndefinedExpr) nodeTag()       {}
 func (e *UndefinedExpr) exprTag()       {}
 
-// SelfExpr represents "self" — a reference to the enclosing struct (§5.7).
-type SelfExpr struct {
-	Position token.Pos
-}
-
-func (e *SelfExpr) Pos() token.Pos { return e.Position }
-func (e *SelfExpr) nodeTag()       {}
-func (e *SelfExpr) exprTag()       {}
-
-// EnvExpr represents "env" — access to environment variables (§5.8).
+// EnvExpr represents "env" — access to environment variables (§5.13).
 type EnvExpr struct {
 	Position token.Pos
 }
