@@ -102,7 +102,7 @@ func (ev *Evaluator) stdHas(evalArgs func() ([]*Value, error)) (*Value, error) {
 	switch coll.Kind {
 	case KindList:
 		for _, e := range coll.List.Elements {
-			if ev.valuesEqual(e, key) {
+			if valuesEqual(e, key) {
 				return Bool(true), nil
 			}
 		}

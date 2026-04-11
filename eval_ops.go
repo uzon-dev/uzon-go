@@ -107,7 +107,7 @@ func (ev *Evaluator) evalEquality(left, right *Value, negated bool) (*Value, err
 		}
 	}
 
-	eq := ev.valuesEqual(left, right)
+	eq := valuesEqual(left, right)
 	if negated {
 		return Bool(!eq), nil
 	}
@@ -115,7 +115,7 @@ func (ev *Evaluator) evalEquality(left, right *Value, negated bool) (*Value, err
 }
 
 // valuesEqual performs deep equality comparison.
-func (ev *Evaluator) valuesEqual(a, b *Value) bool {
+func valuesEqual(a, b *Value) bool {
 	if a.Kind != b.Kind {
 		return false
 	}
@@ -141,7 +141,7 @@ func (ev *Evaluator) valuesEqual(a, b *Value) bool {
 		}
 		for _, f := range a.Struct.Fields {
 			bv := b.Struct.Get(f.Name)
-			if bv == nil || !ev.valuesEqual(f.Value, bv) {
+			if bv == nil || !valuesEqual(f.Value, bv) {
 				return false
 			}
 		}
@@ -151,7 +151,7 @@ func (ev *Evaluator) valuesEqual(a, b *Value) bool {
 			return false
 		}
 		for i := range a.List.Elements {
-			if !ev.valuesEqual(a.List.Elements[i], b.List.Elements[i]) {
+			if !valuesEqual(a.List.Elements[i], b.List.Elements[i]) {
 				return false
 			}
 		}
@@ -161,14 +161,14 @@ func (ev *Evaluator) valuesEqual(a, b *Value) bool {
 			return false
 		}
 		for i := range a.Tuple.Elements {
-			if !ev.valuesEqual(a.Tuple.Elements[i], b.Tuple.Elements[i]) {
+			if !valuesEqual(a.Tuple.Elements[i], b.Tuple.Elements[i]) {
 				return false
 			}
 		}
 		return true
 	case KindTaggedUnion:
 		return a.TaggedUnion.Tag == b.TaggedUnion.Tag &&
-			ev.valuesEqual(a.TaggedUnion.Inner, b.TaggedUnion.Inner)
+			valuesEqual(a.TaggedUnion.Inner, b.TaggedUnion.Inner)
 	default:
 		return false
 	}
@@ -211,7 +211,7 @@ func (ev *Evaluator) evalIn(left, right *Value) (*Value, error) {
 		}
 	}
 	for _, elem := range right.List.Elements {
-		if ev.valuesEqual(left, elem) {
+		if valuesEqual(left, elem) {
 			return Bool(true), nil
 		}
 	}
@@ -571,7 +571,7 @@ func (ev *Evaluator) evalCase(e *ast.CaseExpr, scope *Scope) (*Value, error) {
 				if wVal.Str == scrutinee.Enum.Variant {
 					matched = true
 				}
-			} else if ev.valuesEqual(scrutinee, wVal) {
+			} else if valuesEqual(scrutinee, wVal) {
 				matched = true
 			}
 		}
