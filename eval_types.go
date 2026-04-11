@@ -168,10 +168,19 @@ func (ev *Evaluator) evalAs(e *ast.AsExpr, scope *Scope) (*Value, error) {
 					el.Type = elemTi
 				}
 			}
+			val.List.ElementType = elemTi
 			val.Type = ti
 			val.Adoptable = false
 			return val, nil
 		}
+		// Builtin element type (e.g. [] as [i64])
+		val.List.ElementType = elemTi
+		for _, el := range val.List.Elements {
+			el.Type = elemTi
+		}
+		val.Type = ti
+		val.Adoptable = false
+		return val, nil
 	}
 
 	// Numeric range validation for "as" annotation
@@ -361,10 +370,14 @@ func (ev *Evaluator) evalNamed(e *ast.NamedExpr, scope *Scope) (*Value, error) {
 			variants = append(variants, TaggedVariant{Name: v.Name, Type: ev.resolveTypeExpr(v.TypeExpr)})
 		}
 	}
-	return &Value{
+	result := &Value{
 		Kind:        KindTaggedUnion,
 		TaggedUnion: &TaggedUnionValue{Tag: e.Tag, Inner: val, Variants: variants},
-	}, nil
+	}
+	if len(e.Variants) == 0 && val.Type != nil && val.Type.Name != "" {
+		result.Type = val.Type
+	}
+	return result, nil
 }
 
 func (ev *Evaluator) evalIsNamed(e *ast.IsNamedExpr, scope *Scope) (*Value, error) {

@@ -210,6 +210,15 @@ func (ev *Evaluator) evalBindings(bindings []*ast.Binding, scope *Scope) (*Value
 			}
 		}
 
+		// Bare identifier that was not resolved by "as"/"from" is an error
+		if v.Type != nil && v.Type.Name == "__ident__" {
+			msg := fmt.Sprintf("binding %q: %q is not defined", b.Name, v.Str)
+			if hint := identHint(v.Str); hint != "" {
+				msg += fmt.Sprintf("; did you mean %s?", hint)
+			}
+			return nil, &PosError{Pos: b.Position, Msg: msg}
+		}
+
 		// Handle "called" type naming (§6)
 		if b.CalledName != "" {
 			if _, exists := ev.types.types[b.CalledName]; exists {
@@ -398,4 +407,14 @@ func (ev *Evaluator) evalExprSwitch(expr ast.Expr, scope *Scope) (*Value, error)
 	default:
 		return nil, fmt.Errorf("unknown expression type %T", expr)
 	}
+}
+
+// identHint returns a suggestion when a bare identifier is a case variant
+// of a UZON keyword.
+func identHint(name string) string {
+	lower := strings.ToLower(name)
+	if lower != name && token.IsKeyword(lower) {
+		return lower
+	}
+	return ""
 }

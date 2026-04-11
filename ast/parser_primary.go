@@ -101,9 +101,10 @@ func (p *Parser) parseStringOrInterpolation() Expr {
 		fullStr = raw
 	}
 
-	// Check for interpolation markers.
-	if !strings.Contains(fullStr, "{") {
-		return &LiteralExpr{Token: token.Token{Type: token.StringLit, Literal: fullStr, Pos: pos}}
+	// Check for interpolation markers (unescaped '{').
+	if !containsUnescapedBrace(fullStr) {
+		resolved := resolveStringEscapes(fullStr)
+		return &LiteralExpr{Token: token.Token{Type: token.StringLit, Literal: resolved, Pos: pos}}
 	}
 
 	parts := p.parseInterpolationParts(fullStr, pos)
@@ -111,6 +112,42 @@ func (p *Parser) parseStringOrInterpolation() Expr {
 		return &LiteralExpr{Token: token.Token{Type: token.StringLit, Literal: parts[0].Text, Pos: pos}}
 	}
 	return &InterpolatedStringExpr{Parts: parts, Position: pos}
+}
+
+// containsUnescapedBrace returns true if s contains a '{' not preceded by '\'.
+func containsUnescapedBrace(s string) bool {
+	runes := []rune(s)
+	for i := 0; i < len(runes); i++ {
+		if runes[i] == '\\' {
+			i++ // skip escaped char
+			continue
+		}
+		if runes[i] == '{' {
+			return true
+		}
+	}
+	return false
+}
+
+// resolveStringEscapes resolves preserved \\ → \ and \{ → { in token literals.
+func resolveStringEscapes(s string) string {
+	if !strings.Contains(s, "\\") {
+		return s
+	}
+	var sb strings.Builder
+	runes := []rune(s)
+	for i := 0; i < len(runes); i++ {
+		if runes[i] == '\\' && i+1 < len(runes) {
+			next := runes[i+1]
+			if next == '\\' || next == '{' {
+				sb.WriteRune(next)
+				i++
+				continue
+			}
+		}
+		sb.WriteRune(runes[i])
+	}
+	return sb.String()
 }
 
 // parseInterpolationParts splits a string into literal and expression parts.
@@ -122,6 +159,12 @@ func (p *Parser) parseInterpolationParts(s string, pos token.Pos) []StringPart {
 	i := 0
 
 	for i < len(runes) {
+		if runes[i] == '\\' && i+1 < len(runes) && (runes[i+1] == '{' || runes[i+1] == '\\') {
+			// Escaped brace or backslash — emit as literal character.
+			text.WriteRune(runes[i+1])
+			i += 2
+			continue
+		}
 		if runes[i] == '{' {
 			if text.Len() > 0 {
 				parts = append(parts, StringPart{Text: text.String()})
