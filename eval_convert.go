@@ -28,8 +28,16 @@ func (ev *Evaluator) evalTo(e *ast.ToExpr, scope *Scope) (*Value, error) {
 	}
 
 	// §5.11: undefined propagates through "to"
-	if val.Kind == KindUndefined {
+	if val.Kind == KindUndefined || isUnresolvedIdent(val) {
 		return Undefined(), nil
+	}
+
+	// §5.11.0/§D.1: "to null" is identity — only null can convert to null
+	if ti != nil && ti.BaseType == "null" {
+		if val.Kind == KindNull {
+			return val, nil
+		}
+		return nil, fmt.Errorf("cannot convert %s to null", val.Kind)
 	}
 
 	return ev.convertValue(val, ti, e.TypeExpr.Path, scope)

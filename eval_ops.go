@@ -42,6 +42,12 @@ func (ev *Evaluator) evalBinary(e *ast.BinaryExpr, scope *Scope) (*Value, error)
 		if left.Kind == KindUndefined || isUnresolvedIdent(left) {
 			return right, nil
 		}
+		// §11.2.1: or else operands must have compatible types (null exempted)
+		if right.Kind != KindUndefined && !isUnresolvedIdent(right) &&
+			left.Kind != KindNull && right.Kind != KindNull &&
+			left.Kind != right.Kind {
+			return nil, fmt.Errorf("or else type mismatch: %s and %s", left.Kind, right.Kind)
+		}
 		return left, nil
 	case token.Is:
 		return ev.evalEquality(left, right, false)

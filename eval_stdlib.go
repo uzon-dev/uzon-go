@@ -84,7 +84,7 @@ func (ev *Evaluator) stdLen(evalArgs func() ([]*Value, error)) (*Value, error) {
 	case KindStruct:
 		return Int(int64(len(vals[0].Struct.Fields))), nil
 	case KindString:
-		return Int(int64(len([]rune(vals[0].Str)))), nil
+		return Int(int64(len(vals[0].Str))), nil
 	default:
 		return nil, fmt.Errorf("std.len: expected collection or string, got %s", vals[0].Kind)
 	}
@@ -134,6 +134,15 @@ func (ev *Evaluator) stdGet(evalArgs func() ([]*Value, error)) (*Value, error) {
 		idx := int(key.Int.Int64())
 		if idx >= 0 && idx < len(coll.List.Elements) {
 			return coll.List.Elements[idx], nil
+		}
+		return Undefined(), nil
+	case KindTuple:
+		if key.Kind != KindInt {
+			return nil, fmt.Errorf("std.get: tuple index must be integer")
+		}
+		idx := int(key.Int.Int64())
+		if idx >= 0 && idx < len(coll.Tuple.Elements) {
+			return coll.Tuple.Elements[idx], nil
 		}
 		return Undefined(), nil
 	case KindStruct:
