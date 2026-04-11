@@ -144,6 +144,46 @@ func diffValues(path string, got, want *Value) string {
 	return ""
 }
 
+// TestConformanceRoundtrip ensures that parse → emit → re-parse produces
+// identical values for each .uzon file in the roundtrip directory.
+func TestConformanceRoundtrip(t *testing.T) {
+	dir := filepath.Join(conformanceDir, "roundtrip")
+	entries, err := os.ReadDir(dir)
+	if err != nil {
+		t.Skipf("conformance roundtrip dir not found: %s", dir)
+		return
+	}
+
+	for _, entry := range entries {
+		name := entry.Name()
+		if entry.IsDir() || !strings.HasSuffix(name, ".uzon") {
+			continue
+		}
+		base := strings.TrimSuffix(name, ".uzon")
+		t.Run(base, func(t *testing.T) {
+			path := filepath.Join(dir, name)
+			original, err := ParseFile(path)
+			if err != nil {
+				t.Skipf("parse original: %v", err)
+				return
+			}
+
+			e := &emitter{}
+			e.emitDocument(original)
+			emitted := e.sb.String()
+
+			reparsed, err := Parse([]byte(emitted))
+			if err != nil {
+				t.Fatalf("re-parse failed:\n%s\nerror: %v", emitted, err)
+			}
+
+			if diff := diffValues("", reparsed, original); diff != "" {
+				t.Fatalf("roundtrip mismatch:\nemitted:\n%s\ndiff:\n%s", emitted, diff)
+			}
+		})
+	}
+}
+
 // runConformanceDir walks a directory and runs each .uzon file.
 // If expectPass is true, the file must parse+eval successfully.
 // If expectPass is false, it must produce an error at parse or eval time.

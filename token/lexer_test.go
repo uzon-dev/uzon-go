@@ -142,9 +142,9 @@ func TestLexerStringEscapes(t *testing.T) {
 		expected string
 	}{
 		{`"tab:\there\n"`, "tab:\there\n"},
-		{`"quote:\" backslash:\\"`, "quote:\" backslash:\\"},
+		{`"quote:\" backslash:\\"`, "quote:\" backslash:\\\\"},
 		{`"\r\t\0"`, "\r\t\x00"},
-		{`"\{curly}"`, "{curly}"},
+		{`"\{curly}"`, "\\{curly}"},
 	}
 	for _, tt := range tests {
 		lex := NewLexer([]byte(tt.src), "")

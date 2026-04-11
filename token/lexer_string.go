@@ -14,6 +14,10 @@ import (
 // for valid Unicode scalar values, 1–6 hex digits per §4.4), and string
 // interpolation ({expr}) with proper brace depth tracking for nested
 // strings (§4.4.1).
+//
+// The \\ and \{ escapes are preserved in the token literal (as two-char
+// sequences) so the parser can distinguish escaped braces from interpolation.
+// All other escapes are resolved to their character values.
 func (l *Lexer) scanString(pos Pos) Token {
 	var sb strings.Builder
 	l.advance() // consume opening "
@@ -25,7 +29,7 @@ func (l *Lexer) scanString(pos Pos) Token {
 			case '"':
 				sb.WriteByte('"')
 			case '\\':
-				sb.WriteByte('\\')
+				sb.WriteString("\\\\")
 			case 'n':
 				sb.WriteByte('\n')
 			case 'r':
@@ -35,7 +39,7 @@ func (l *Lexer) scanString(pos Pos) Token {
 			case '0':
 				sb.WriteByte(0)
 			case '{':
-				sb.WriteByte('{')
+				sb.WriteString("\\{")
 			case 'x':
 				// \xHH — restricted to 0x00–0x7F per §4.4.
 				l.advance()

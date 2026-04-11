@@ -4,7 +4,7 @@
 package uzon
 
 import (
-	"fmt"
+	"math"
 	"strings"
 )
 
@@ -18,12 +18,16 @@ func (v *Value) Marshal() ([]byte, error) {
 
 // emitter writes UZON text into a string builder with indentation tracking.
 type emitter struct {
-	sb     strings.Builder
-	indent int
+	sb           strings.Builder
+	indent       int
+	definedTypes map[string]bool // tracks type names emitted with "called"
 }
 
 // emitDocument emits top-level bindings without surrounding braces.
 func (e *emitter) emitDocument(v *Value) {
+	if e.definedTypes == nil {
+		e.definedTypes = make(map[string]bool)
+	}
 	for i, f := range v.Struct.Fields {
 		if i > 0 {
 			e.sb.WriteByte('\n')
@@ -47,6 +51,17 @@ func (e *emitter) emitFieldBinding(f Field) {
 	} else {
 		e.sb.WriteString(" is ")
 		e.emitValue(f.Value)
+	}
+
+	// Emit "called TypeName" for type definitions (first occurrence)
+	if e.definedTypes != nil && f.Value.Type != nil && f.Value.Type.Name != "" &&
+		f.Value.Type.Name != "__ident__" && !e.definedTypes[f.Value.Type.Name] {
+		switch f.Value.Kind {
+		case KindEnum, KindTaggedUnion, KindStruct:
+			e.sb.WriteString(" called ")
+			e.sb.WriteString(f.Value.Type.Name)
+			e.definedTypes[f.Value.Type.Name] = true
+		}
 	}
 }
 
@@ -76,7 +91,12 @@ func (e *emitter) emitValue(v *Value) {
 			}
 		} else {
 			f, _ := v.Float.Float64()
-			e.sb.WriteString(formatFloat(f))
+			if math.IsInf(f, 0) {
+				// big.Float value exceeds float64 range; use Text representation
+				e.sb.WriteString(v.Float.Text('g', -1))
+			} else {
+				e.sb.WriteString(formatFloat(f))
+			}
 		}
 	case KindString:
 		e.emitString(v.Str)
@@ -87,11 +107,25 @@ func (e *emitter) emitValue(v *Value) {
 	case KindList:
 		e.emitList(v)
 	case KindEnum:
-		e.emitEnum(v)
+		if e.definedTypes != nil && v.Type != nil && v.Type.Name != "" && e.definedTypes[v.Type.Name] {
+			e.sb.WriteString(v.Enum.Variant)
+			e.sb.WriteString(" as ")
+			e.sb.WriteString(v.Type.Name)
+		} else {
+			e.emitEnum(v)
+		}
 	case KindUnion:
 		e.emitUnion(v)
 	case KindTaggedUnion:
-		e.emitTaggedUnion(v)
+		if e.definedTypes != nil && v.Type != nil && v.Type.Name != "" && e.definedTypes[v.Type.Name] {
+			e.emitValue(v.TaggedUnion.Inner)
+			e.sb.WriteString(" as ")
+			e.sb.WriteString(v.Type.Name)
+			e.sb.WriteString(" named ")
+			e.sb.WriteString(v.TaggedUnion.Tag)
+		} else {
+			e.emitTaggedUnion(v)
+		}
 	case KindFunction:
 		e.sb.WriteString("<function>")
 	}
@@ -129,6 +163,8 @@ func (e *emitter) emitString(s string) {
 			e.sb.WriteString(`\"`)
 		case '\\':
 			e.sb.WriteString(`\\`)
+		case '{':
+			e.sb.WriteString(`\{`)
 		case '\n':
 			e.sb.WriteString(`\n`)
 		case '\r':
@@ -196,6 +232,9 @@ func needsQuoting(name string) bool {
 	if name == "" {
 		return true
 	}
+	if name[0] >= '0' && name[0] <= '9' {
+		return true
+	}
 	for _, r := range name {
 		if r < 128 {
 			switch r {
@@ -243,10 +282,16 @@ func (e *emitter) emitTuple(v *Value) {
 func (e *emitter) emitList(v *Value) {
 	if len(v.List.Elements) == 0 {
 		e.sb.WriteString("[]")
-		if v.List.ElementType != nil && v.List.ElementType.BaseType != "" {
-			e.sb.WriteString(" as [")
-			e.sb.WriteString(v.List.ElementType.BaseType)
-			e.sb.WriteByte(']')
+		if v.List.ElementType != nil {
+			typeName := v.List.ElementType.BaseType
+			if typeName == "" {
+				typeName = v.List.ElementType.Name
+			}
+			if typeName != "" {
+				e.sb.WriteString(" as [")
+				e.sb.WriteString(typeName)
+				e.sb.WriteByte(']')
+			}
 		}
 		return
 	}
@@ -260,7 +305,8 @@ func (e *emitter) emitList(v *Value) {
 	e.sb.WriteString(" ]")
 }
 
-// emitEnum writes an enum expression: "variant from v1, v2, ..." (§3.4).
+// emitEnum writes an enum definition: "variant from v1, v2, ..." (§3.4).
+// The "called TypeName" is handled by emitFieldBinding.
 func (e *emitter) emitEnum(v *Value) {
 	e.sb.WriteString(v.Enum.Variant)
 	e.sb.WriteString(" from ")
@@ -269,10 +315,6 @@ func (e *emitter) emitEnum(v *Value) {
 			e.sb.WriteString(", ")
 		}
 		e.sb.WriteString(variant)
-	}
-	if v.Type != nil && v.Type.Name != "" {
-		e.sb.WriteString(" called ")
-		e.sb.WriteString(v.Type.Name)
 	}
 }
 
@@ -292,7 +334,8 @@ func (e *emitter) emitUnion(v *Value) {
 	}
 }
 
-// emitTaggedUnion writes a tagged union: "value named tag from ..." (§3.6).
+// emitTaggedUnion writes a tagged union definition: "value named tag from ..." (§3.6).
+// The "called TypeName" is handled by emitFieldBinding.
 func (e *emitter) emitTaggedUnion(v *Value) {
 	e.emitValue(v.TaggedUnion.Inner)
 	e.sb.WriteString(" named ")
@@ -315,9 +358,6 @@ func (e *emitter) emitTaggedUnion(v *Value) {
 				e.sb.WriteString("null")
 			}
 		}
-	}
-	if v.Type != nil && v.Type.Name != "" {
-		fmt.Fprintf(&e.sb, " called %s", v.Type.Name)
 	}
 }
 
