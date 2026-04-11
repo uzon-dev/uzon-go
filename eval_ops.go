@@ -115,6 +115,13 @@ func (ev *Evaluator) evalEquality(left, right *Value, negated bool) (*Value, err
 	if left.Kind == KindFunction || right.Kind == KindFunction {
 		return nil, fmt.Errorf("functions cannot be compared for equality")
 	}
+	// §3.7.2: tagged union vs non-tagged-union comparison is a type error
+	if left.Kind == KindTaggedUnion && right.Kind != KindTaggedUnion {
+		return nil, fmt.Errorf("type error: cannot compare tagged union with %s", right.Kind)
+	}
+	if left.Kind != KindTaggedUnion && right.Kind == KindTaggedUnion {
+		return nil, fmt.Errorf("type error: cannot compare %s with tagged union", left.Kind)
+	}
 	// §5.2: comparing structs with different shapes
 	if left.Kind == KindStruct && right.Kind == KindStruct {
 		if len(left.Struct.Fields) != len(right.Struct.Fields) {
@@ -124,6 +131,21 @@ func (ev *Evaluator) evalEquality(left, right *Value, negated bool) (*Value, err
 			if right.Struct.Get(f.Name) == nil {
 				return nil, fmt.Errorf("cannot compare structs with different shapes")
 			}
+		}
+	}
+	// §5.2: tuples of different length are a type error
+	if left.Kind == KindTuple && right.Kind == KindTuple {
+		if len(left.Tuple.Elements) != len(right.Tuple.Elements) {
+			return nil, fmt.Errorf("type error: cannot compare tuples of different length (%d vs %d)",
+				len(left.Tuple.Elements), len(right.Tuple.Elements))
+		}
+	}
+	// §5.2: lists with different element types are a type error
+	if left.Kind == KindList && right.Kind == KindList {
+		if left.List.ElementType != nil && right.List.ElementType != nil &&
+			left.List.ElementType.BaseType != right.List.ElementType.BaseType {
+			return nil, fmt.Errorf("type error: cannot compare lists with different element types (%s vs %s)",
+				left.List.ElementType.BaseType, right.List.ElementType.BaseType)
 		}
 	}
 

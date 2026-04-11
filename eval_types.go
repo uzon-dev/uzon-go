@@ -394,8 +394,24 @@ func (ev *Evaluator) evalIsNamed(e *ast.IsNamedExpr, scope *Scope) (*Value, erro
 	if err != nil {
 		return nil, err
 	}
+	if val.Kind == KindUndefined {
+		return nil, fmt.Errorf("'is named' on undefined")
+	}
 	if val.Kind != KindTaggedUnion {
 		return nil, fmt.Errorf("'is named' requires tagged union, got %s", val.Kind)
+	}
+	// §3.7.2: variant name must be valid
+	if len(val.TaggedUnion.Variants) > 0 {
+		found := false
+		for _, v := range val.TaggedUnion.Variants {
+			if v.Name == e.Variant {
+				found = true
+				break
+			}
+		}
+		if !found {
+			return nil, fmt.Errorf("type error: '%s' is not a variant of this tagged union", e.Variant)
+		}
 	}
 	result := val.TaggedUnion.Tag == e.Variant
 	if e.Negated {
