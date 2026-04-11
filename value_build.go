@@ -42,6 +42,18 @@ func TupleOf(elems ...any) *Value {
 	return NewTuple(vals...)
 }
 
+// toValue converts any to *Value, returning an error instead of panicking.
+// If v is already a *Value, it is returned directly. If v is nil, Null() is returned.
+func toValue(v any) (*Value, error) {
+	if v == nil {
+		return Null(), nil
+	}
+	if val, ok := v.(*Value); ok {
+		return val, nil
+	}
+	return ValueOf(v)
+}
+
 // autoWrap converts a Go value to *Value. If v is already a *Value, it is
 // returned directly. Otherwise, ValueOf is used. Panics on unsupported types.
 func autoWrap(v any) *Value {

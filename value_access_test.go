@@ -4,6 +4,7 @@
 package uzon
 
 import (
+	"fmt"
 	"math"
 	"math/big"
 	"testing"
@@ -317,6 +318,351 @@ func TestMergeNonStruct(t *testing.T) {
 	_, err := Merge(Int(1), NewStruct())
 	if err == nil {
 		t.Fatal("expected error for non-struct merge")
+	}
+}
+
+// --- SetPath tests ---
+
+func TestSetPathStruct(t *testing.T) {
+	v := NewStruct(
+		Bind("server", NewStruct(
+			Bind("host", "localhost"),
+			Bind("port", 8080),
+		)),
+	)
+
+	if err := v.SetPath("server.host", "newhost"); err != nil {
+		t.Fatal(err)
+	}
+	s, _ := v.GetPath("server.host").AsString()
+	if s != "newhost" {
+		t.Errorf("got %q, want %q", s, "newhost")
+	}
+}
+
+func TestSetPathNewField(t *testing.T) {
+	v := NewStruct(Bind("x", 1))
+	if err := v.SetPath("y", 2); err != nil {
+		t.Fatal(err)
+	}
+	n, _ := v.GetPath("y").AsInt()
+	if n != 2 {
+		t.Errorf("got %d, want 2", n)
+	}
+}
+
+func TestSetPathList(t *testing.T) {
+	v := NewStruct(Bind("items", ListOf(1, 2, 3)))
+	if err := v.SetPath("items.1", 99); err != nil {
+		t.Fatal(err)
+	}
+	n, _ := v.GetPath("items.1").AsInt()
+	if n != 99 {
+		t.Errorf("got %d, want 99", n)
+	}
+}
+
+func TestSetPathError(t *testing.T) {
+	v := NewStruct(Bind("x", 1))
+
+	if err := v.SetPath("missing.field", 1); err == nil {
+		t.Error("expected error for missing intermediate path")
+	}
+	if err := v.SetPath("", 1); err == nil {
+		t.Error("expected error for empty path")
+	}
+}
+
+// --- Clone tests ---
+
+func TestClonePrimitive(t *testing.T) {
+	original := Int(42)
+	cloned := Clone(original)
+
+	if !Equal(original, cloned) {
+		t.Error("clone should equal original")
+	}
+
+	// Mutation should not affect clone
+	original.Int.SetInt64(99)
+	n, _ := cloned.AsInt()
+	if n != 42 {
+		t.Errorf("clone was mutated: got %d, want 42", n)
+	}
+}
+
+func TestCloneStruct(t *testing.T) {
+	original := NewStruct(
+		Bind("host", "localhost"),
+		Bind("port", 8080),
+	)
+	cloned := Clone(original)
+
+	if !Equal(original, cloned) {
+		t.Error("clone should equal original")
+	}
+
+	// Mutate original
+	original.Struct.Set("host", String("newhost"))
+	s, _ := cloned.GetPath("host").AsString()
+	if s != "localhost" {
+		t.Errorf("clone was mutated: got %q, want %q", s, "localhost")
+	}
+}
+
+func TestCloneList(t *testing.T) {
+	original := NewList([]*Value{Int(1), Int(2), Int(3)}, nil)
+	cloned := Clone(original)
+
+	original.List.Elements[0].Int.SetInt64(99)
+	n, _ := cloned.List.Elements[0].AsInt()
+	if n != 1 {
+		t.Errorf("clone was mutated: got %d, want 1", n)
+	}
+}
+
+func TestCloneNil(t *testing.T) {
+	if Clone(nil) != nil {
+		t.Error("Clone(nil) should return nil")
+	}
+}
+
+// --- Walk tests ---
+
+func TestWalk(t *testing.T) {
+	v := NewStruct(
+		Bind("a", 1),
+		Bind("b", NewStruct(
+			Bind("c", 2),
+		)),
+	)
+
+	var paths []string
+	err := Walk(v, func(path string, _ *Value) error {
+		paths = append(paths, path)
+		return nil
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	expected := []string{"", "a", "b", "b.c"}
+	if len(paths) != len(expected) {
+		t.Fatalf("got %d paths, want %d: %v", len(paths), len(expected), paths)
+	}
+	for i, p := range paths {
+		if p != expected[i] {
+			t.Errorf("path[%d] = %q, want %q", i, p, expected[i])
+		}
+	}
+}
+
+func TestWalkList(t *testing.T) {
+	v := NewStruct(
+		Bind("items", ListOf("a", "b")),
+	)
+
+	var paths []string
+	Walk(v, func(path string, _ *Value) error {
+		paths = append(paths, path)
+		return nil
+	})
+
+	expected := []string{"", "items", "items.0", "items.1"}
+	if len(paths) != len(expected) {
+		t.Fatalf("got %v, want %v", paths, expected)
+	}
+	for i, p := range paths {
+		if p != expected[i] {
+			t.Errorf("path[%d] = %q, want %q", i, p, expected[i])
+		}
+	}
+}
+
+func TestWalkEarlyStop(t *testing.T) {
+	v := NewStruct(
+		Bind("a", 1),
+		Bind("b", 2),
+		Bind("c", 3),
+	)
+
+	count := 0
+	err := Walk(v, func(path string, _ *Value) error {
+		count++
+		if path == "b" {
+			return fmt.Errorf("stop")
+		}
+		return nil
+	})
+	if err == nil {
+		t.Error("expected error from early stop")
+	}
+	if count != 3 { // root, a, b (stops at b)
+		t.Errorf("visited %d nodes, want 3", count)
+	}
+}
+
+func TestWalkCollectStrings(t *testing.T) {
+	v := NewStruct(
+		Bind("name", "alice"),
+		Bind("nested", NewStruct(
+			Bind("title", "engineer"),
+		)),
+		Bind("count", 42),
+	)
+
+	var strings []string
+	Walk(v, func(path string, val *Value) error {
+		if s, ok := val.AsString(); ok {
+			strings = append(strings, s)
+		}
+		return nil
+	})
+
+	if len(strings) != 2 || strings[0] != "alice" || strings[1] != "engineer" {
+		t.Errorf("got %v, want [alice engineer]", strings)
+	}
+}
+
+// --- Mutation tests ---
+
+func TestStructDelete(t *testing.T) {
+	v := NewStruct(Bind("a", 1), Bind("b", 2), Bind("c", 3))
+	if !v.Struct.Delete("b") {
+		t.Fatal("Delete should return true for existing field")
+	}
+	if v.Len() != 2 {
+		t.Errorf("Len after delete: got %d, want 2", v.Len())
+	}
+	keys := v.Keys()
+	if keys[0] != "a" || keys[1] != "c" {
+		t.Errorf("Keys after delete: got %v, want [a c]", keys)
+	}
+}
+
+func TestStructDeleteNotFound(t *testing.T) {
+	v := NewStruct(Bind("a", 1))
+	if v.Struct.Delete("z") {
+		t.Error("Delete should return false for missing field")
+	}
+}
+
+func TestStructDeleteThenGet(t *testing.T) {
+	v := NewStruct(Bind("a", 1), Bind("b", 2))
+	v.Struct.Delete("a")
+	if v.Struct.Get("a") != nil {
+		t.Error("Get after delete should return nil")
+	}
+	n, _ := v.Struct.Get("b").AsInt()
+	if n != 2 {
+		t.Errorf("Get(b) after delete(a): got %d, want 2", n)
+	}
+}
+
+func TestListPush(t *testing.T) {
+	v := NewList([]*Value{Int(1)}, nil)
+	v.List.Push(Int(2), Int(3))
+	if len(v.List.Elements) != 3 {
+		t.Errorf("Len after push: got %d, want 3", len(v.List.Elements))
+	}
+	n, _ := v.List.Elements[2].AsInt()
+	if n != 3 {
+		t.Errorf("last element: got %d, want 3", n)
+	}
+}
+
+func TestListPop(t *testing.T) {
+	v := NewList([]*Value{Int(1), Int(2), Int(3)}, nil)
+	last, ok := v.List.Pop()
+	if !ok {
+		t.Fatal("Pop should return true")
+	}
+	n, _ := last.AsInt()
+	if n != 3 {
+		t.Errorf("popped: got %d, want 3", n)
+	}
+	if len(v.List.Elements) != 2 {
+		t.Errorf("Len after pop: got %d, want 2", len(v.List.Elements))
+	}
+}
+
+func TestListPopEmpty(t *testing.T) {
+	v := NewList(nil, nil)
+	_, ok := v.List.Pop()
+	if ok {
+		t.Error("Pop on empty list should return false")
+	}
+}
+
+// --- DeepMerge tests ---
+
+func TestDeepMerge(t *testing.T) {
+	base := NewStruct(
+		Bind("server", NewStruct(
+			Bind("host", "localhost"),
+			Bind("port", 8080),
+		)),
+		Bind("debug", false),
+	)
+	override := NewStruct(
+		Bind("server", NewStruct(
+			Bind("port", 9090),
+			Bind("tls", true),
+		)),
+		Bind("debug", true),
+	)
+
+	merged, err := DeepMerge(base, override)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	// host preserved from base
+	s, _ := merged.GetPath("server.host").AsString()
+	if s != "localhost" {
+		t.Errorf("server.host: got %q, want %q", s, "localhost")
+	}
+
+	// port overridden by override
+	n, _ := merged.GetPath("server.port").AsInt()
+	if n != 9090 {
+		t.Errorf("server.port: got %d, want 9090", n)
+	}
+
+	// tls added from override
+	b, _ := merged.GetPath("server.tls").AsBool()
+	if !b {
+		t.Error("server.tls: expected true")
+	}
+
+	// debug overridden
+	b, _ = merged.GetPath("debug").AsBool()
+	if !b {
+		t.Error("debug: expected true")
+	}
+}
+
+func TestDeepMergeIndependent(t *testing.T) {
+	base := NewStruct(Bind("x", 1))
+	override := NewStruct(Bind("x", 2))
+
+	merged, err := DeepMerge(base, override)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	// Mutating merged should not affect base
+	merged.Struct.Set("x", Int(99))
+	n, _ := base.GetPath("x").AsInt()
+	if n != 1 {
+		t.Errorf("base was mutated: got %d, want 1", n)
+	}
+}
+
+func TestDeepMergeNonStruct(t *testing.T) {
+	_, err := DeepMerge(Int(1), NewStruct())
+	if err == nil {
+		t.Fatal("expected error for non-struct deep merge")
 	}
 }
 
