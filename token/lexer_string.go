@@ -44,17 +44,21 @@ func (l *Lexer) scanString(pos Pos) Token {
 				// \xHH — restricted to 0x00–0x7F per §4.4.
 				l.advance()
 				h1, ok1 := safeHexVal(l.ch)
+				if !ok1 {
+					sb.WriteRune(unicode.ReplacementChar)
+					continue // don't consume non-hex char
+				}
 				l.advance()
 				h2, ok2 := safeHexVal(l.ch)
-				if !ok1 || !ok2 {
+				if !ok2 {
+					sb.WriteRune(unicode.ReplacementChar)
+					continue // don't consume non-hex char
+				}
+				val := h1<<4 | h2
+				if val > 0x7F {
 					sb.WriteRune(unicode.ReplacementChar)
 				} else {
-					val := h1<<4 | h2
-					if val > 0x7F {
-						sb.WriteRune(unicode.ReplacementChar)
-					} else {
-						sb.WriteByte(byte(val))
-					}
+					sb.WriteByte(byte(val))
 				}
 			case 'u':
 				// \u{HHHHHH} — 1–6 hex digits, valid Unicode scalar value.

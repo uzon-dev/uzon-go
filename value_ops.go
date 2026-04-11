@@ -440,9 +440,26 @@ func simpleNumericOp(name string, a, b *Value,
 		if a.FloatIsNaN || b.FloatIsNaN {
 			return nanFloat(a.Type), nil
 		}
-		return &Value{Kind: KindFloat, Float: floatFn(a.Float, b.Float), Type: a.Type}, nil
+		r, isNaN := safeFloatOp(floatFn, a.Float, b.Float)
+		if isNaN {
+			return nanFloat(a.Type), nil
+		}
+		return &Value{Kind: KindFloat, Float: r, Type: a.Type}, nil
 	}
 	return nil, fmt.Errorf("%s requires same numeric type, got %s and %s", name, a.Kind, b.Kind)
+}
+
+// safeFloatOp calls fn, recovering from panics caused by big.Float on
+// certain infinity operations (e.g. Inf-Inf, Inf*0). Returns isNaN=true
+// when the IEEE 754 result would be NaN.
+func safeFloatOp(fn func(*big.Float, *big.Float) *big.Float, a, b *big.Float) (result *big.Float, isNaN bool) {
+	defer func() {
+		if r := recover(); r != nil {
+			result = nil
+			isNaN = true
+		}
+	}()
+	return fn(a, b), false
 }
 
 func nanFloat(ti *TypeInfo) *Value {

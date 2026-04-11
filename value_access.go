@@ -161,17 +161,22 @@ func (v *Value) GetPath(path string) *Value {
 
 // Merge returns a new struct with all fields from a, overridden by fields from b.
 // Fields from a appear first in their original order; new fields from b are appended.
-// Both operands must be KindStruct.
-func Merge(a, b *Value) (*Value, error) {
-	if a.Kind != KindStruct || b.Kind != KindStruct {
-		return nil, fmt.Errorf("Merge requires struct operands, got %s and %s", a.Kind, b.Kind)
+// Both operands must be KindStruct. Operands may be *Value or Go values (auto-wrapped).
+// Field values are cloned so the result is independent of the originals.
+func Merge(a, b any) (*Value, error) {
+	av, bv, err := coerceTwo("Merge", a, b)
+	if err != nil {
+		return nil, err
+	}
+	if av.Kind != KindStruct || bv.Kind != KindStruct {
+		return nil, fmt.Errorf("Merge requires struct operands, got %s and %s", av.Kind, bv.Kind)
 	}
 	result := &StructValue{}
-	for _, f := range a.Struct.Fields {
-		result.Set(f.Name, f.Value)
+	for _, f := range av.Struct.Fields {
+		result.Set(f.Name, Clone(f.Value))
 	}
-	for _, f := range b.Struct.Fields {
-		result.Set(f.Name, f.Value)
+	for _, f := range bv.Struct.Fields {
+		result.Set(f.Name, Clone(f.Value))
 	}
 	return &Value{Kind: KindStruct, Struct: result}, nil
 }
@@ -180,9 +185,18 @@ func Merge(a, b *Value) (*Value, error) {
 
 // DeepMerge returns a new struct with all fields from a, deep-merged with fields from b.
 // When both a and b have a field with the same name and both values are structs,
-// the values are recursively deep-merged. Otherwise, b's value takes precedence.
-// Both operands must be KindStruct.
-func DeepMerge(a, b *Value) (*Value, error) {
+// the values are recursively deep-merged. Tagged unions and unions wrapping structs
+// are transparently unwrapped. Otherwise, b's value takes precedence.
+// Both operands must be KindStruct. Operands may be *Value or Go values (auto-wrapped).
+func DeepMerge(a, b any) (*Value, error) {
+	av, bv, err := coerceTwo("DeepMerge", a, b)
+	if err != nil {
+		return nil, err
+	}
+	return deepMergeValues(av, bv)
+}
+
+func deepMergeValues(a, b *Value) (*Value, error) {
 	if a.Kind != KindStruct || b.Kind != KindStruct {
 		return nil, fmt.Errorf("DeepMerge requires struct operands, got %s and %s", a.Kind, b.Kind)
 	}
@@ -192,8 +206,10 @@ func DeepMerge(a, b *Value) (*Value, error) {
 	}
 	for _, f := range b.Struct.Fields {
 		existing := result.Get(f.Name)
-		if existing != nil && existing.Kind == KindStruct && f.Value.Kind == KindStruct {
-			merged, err := DeepMerge(existing, f.Value)
+		eInner := unwrapToStruct(existing)
+		fInner := unwrapToStruct(f.Value)
+		if eInner != nil && fInner != nil {
+			merged, err := deepMergeValues(eInner, fInner)
 			if err != nil {
 				return nil, err
 			}
@@ -203,6 +219,24 @@ func DeepMerge(a, b *Value) (*Value, error) {
 		}
 	}
 	return &Value{Kind: KindStruct, Struct: result}, nil
+}
+
+// unwrapToStruct returns the value if it is a struct, unwrapping tagged unions
+// and unions. Returns nil if the inner value is not a struct.
+func unwrapToStruct(v *Value) *Value {
+	if v == nil {
+		return nil
+	}
+	for v.Kind == KindTaggedUnion {
+		v = v.TaggedUnion.Inner
+	}
+	for v.Kind == KindUnion {
+		v = v.Union.Inner
+	}
+	if v.Kind == KindStruct {
+		return v
+	}
+	return nil
 }
 
 // --- SetPath ---

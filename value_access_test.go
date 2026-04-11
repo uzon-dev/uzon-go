@@ -314,6 +314,21 @@ func TestMerge(t *testing.T) {
 	}
 }
 
+func TestMergeIndependent(t *testing.T) {
+	a := NewStruct(Bind("x", 1))
+	b := NewStruct(Bind("y", 2))
+	merged, err := Merge(a, b)
+	if err != nil {
+		t.Fatal(err)
+	}
+	// Mutating original should not affect merged
+	a.Struct.Set("x", Int(99))
+	n, _ := merged.GetPath("x").AsInt()
+	if n != 1 {
+		t.Errorf("merged was mutated: got %d, want 1", n)
+	}
+}
+
 func TestMergeNonStruct(t *testing.T) {
 	_, err := Merge(Int(1), NewStruct())
 	if err == nil {
@@ -418,6 +433,25 @@ func TestCloneList(t *testing.T) {
 	n, _ := cloned.List.Elements[0].AsInt()
 	if n != 1 {
 		t.Errorf("clone was mutated: got %d, want 1", n)
+	}
+}
+
+func TestCloneTaggedUnion(t *testing.T) {
+	inner := NewStruct(Bind("x", 10))
+	original := &Value{
+		Kind:        KindTaggedUnion,
+		TaggedUnion: &TaggedUnionValue{Tag: "point", Inner: inner},
+	}
+	cloned := Clone(original)
+
+	// Mutate original inner
+	inner.Struct.Set("x", Int(99))
+	n, _ := cloned.TaggedUnion.Inner.GetPath("x").AsInt()
+	if n != 10 {
+		t.Errorf("clone was mutated: got %d, want 10", n)
+	}
+	if cloned.TaggedUnion.Tag != "point" {
+		t.Errorf("tag: got %q, want %q", cloned.TaggedUnion.Tag, "point")
 	}
 }
 
@@ -666,22 +700,52 @@ func TestDeepMergeNonStruct(t *testing.T) {
 	}
 }
 
+func TestDeepMergeTaggedUnion(t *testing.T) {
+	inner := NewStruct(Bind("host", "localhost"), Bind("port", 8080))
+	tu := &Value{
+		Kind:        KindTaggedUnion,
+		TaggedUnion: &TaggedUnionValue{Tag: "primary", Inner: inner},
+	}
+	base := NewStruct(Bind("server", tu))
+	override := NewStruct(Bind("server", NewStruct(Bind("port", 9090))))
+
+	merged, err := DeepMerge(base, override)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	// port overridden, host preserved through tagged union unwrap
+	n, _ := merged.GetPath("server.port").AsInt()
+	if n != 9090 {
+		t.Errorf("server.port: got %d, want 9090", n)
+	}
+	s, _ := merged.GetPath("server.host").AsString()
+	if s != "localhost" {
+		t.Errorf("server.host: got %q, want %q", s, "localhost")
+	}
+}
+
 // --- String (fmt.Stringer) tests ---
 
 func TestStringStringer(t *testing.T) {
 	tests := []struct {
+		name string
 		v    *Value
 		want string
 	}{
-		{Null(), "null"},
-		{Bool(true), "true"},
-		{Int(42), "42"},
-		{String("hello"), `"hello"`},
+		{"null", Null(), "null"},
+		{"bool", Bool(true), "true"},
+		{"int", Int(42), "42"},
+		{"string", String("hello"), `"hello"`},
+		{"list", NewList([]*Value{Int(1), Int(2)}, nil), "[ 1, 2 ]"},
+		{"empty list", NewList(nil, nil), "[]"},
+		{"tuple", NewTuple(Int(1), String("a")), `(1, "a")`},
+		{"struct", NewStruct(Bind("x", 1), Bind("y", 2)), "{ x is 1, y is 2 }"},
 	}
 	for _, tt := range tests {
 		got := tt.v.String()
 		if got != tt.want {
-			t.Errorf("String(): got %q, want %q", got, tt.want)
+			t.Errorf("%s: String() = %q, want %q", tt.name, got, tt.want)
 		}
 	}
 }

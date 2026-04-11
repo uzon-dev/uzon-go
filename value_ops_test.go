@@ -4,6 +4,7 @@
 package uzon
 
 import (
+	"math"
 	"math/big"
 	"testing"
 )
@@ -606,5 +607,202 @@ func TestEqualList(t *testing.T) {
 	c := NewList([]*Value{Int(1), Int(3)}, nil)
 	if Equal(a, c) {
 		t.Error("lists with different values should not be equal")
+	}
+}
+
+// --- Edge case tests ---
+
+func TestRepeatZero(t *testing.T) {
+	r, err := Repeat("abc", 0)
+	if err != nil {
+		t.Fatal(err)
+	}
+	s, _ := r.AsString()
+	if s != "" {
+		t.Errorf("Repeat(abc, 0) = %q, want empty", s)
+	}
+
+	list := NewList([]*Value{Int(1), Int(2)}, nil)
+	r, err = Repeat(list, 0)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(r.List.Elements) != 0 {
+		t.Errorf("Repeat(list, 0) has %d elements, want 0", len(r.List.Elements))
+	}
+}
+
+func TestRepeatEmptyString(t *testing.T) {
+	r, err := Repeat("", 5)
+	if err != nil {
+		t.Fatal(err)
+	}
+	s, _ := r.AsString()
+	if s != "" {
+		t.Errorf("Repeat('', 5) = %q, want empty", s)
+	}
+}
+
+func TestRepeatEmptyList(t *testing.T) {
+	r, err := Repeat(NewList(nil, nil), 5)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(r.List.Elements) != 0 {
+		t.Errorf("Repeat([], 5) has %d elements, want 0", len(r.List.Elements))
+	}
+}
+
+func TestConcatEmptyStrings(t *testing.T) {
+	r, err := Concat("", "hello")
+	if err != nil {
+		t.Fatal(err)
+	}
+	s, _ := r.AsString()
+	if s != "hello" {
+		t.Errorf("got %q, want %q", s, "hello")
+	}
+
+	r, err = Concat("hello", "")
+	if err != nil {
+		t.Fatal(err)
+	}
+	s, _ = r.AsString()
+	if s != "hello" {
+		t.Errorf("got %q, want %q", s, "hello")
+	}
+}
+
+func TestConcatEmptyLists(t *testing.T) {
+	empty := NewList(nil, nil)
+	items := NewList([]*Value{Int(1)}, nil)
+
+	r, err := Concat(empty, items)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(r.List.Elements) != 1 {
+		t.Errorf("[] ++ [1] has %d elements, want 1", len(r.List.Elements))
+	}
+}
+
+func TestContainsEmptyList(t *testing.T) {
+	found, err := Contains(NewList(nil, nil), 1)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if found {
+		t.Error("should not find anything in empty list")
+	}
+}
+
+func TestModByZero(t *testing.T) {
+	_, err := Mod(Int(10), Int(0))
+	if err == nil {
+		t.Fatal("expected modulo by zero error")
+	}
+}
+
+func TestPowZeroExponent(t *testing.T) {
+	r, err := Pow(Int(5), Int(0))
+	if err != nil {
+		t.Fatal(err)
+	}
+	n, _ := r.AsInt()
+	if n != 1 {
+		t.Errorf("5^0 = %d, want 1", n)
+	}
+}
+
+func TestPowBaseZero(t *testing.T) {
+	r, err := Pow(Int(0), Int(5))
+	if err != nil {
+		t.Fatal(err)
+	}
+	n, _ := r.AsInt()
+	if n != 0 {
+		t.Errorf("0^5 = %d, want 0", n)
+	}
+}
+
+func TestInfinityArithmetic(t *testing.T) {
+	inf := Float64(math.Inf(1))
+	ninf := Float64(math.Inf(-1))
+
+	// Inf + 1
+	r, err := Add(inf, Float64(1.0))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !r.Float.IsInf() {
+		t.Error("Inf + 1 should be Inf")
+	}
+
+	// Inf - Inf = NaN
+	r, err = Sub(inf, inf)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !r.FloatIsNaN {
+		t.Error("Inf - Inf should be NaN")
+	}
+
+	// Inf * 0 = NaN
+	r, err = Mul(inf, Float64(0.0))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !r.FloatIsNaN {
+		t.Error("Inf * 0 should be NaN")
+	}
+
+	// -Inf + Inf = NaN
+	r, err = Add(ninf, inf)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !r.FloatIsNaN {
+		t.Error("-Inf + Inf should be NaN")
+	}
+}
+
+func TestEqualNil(t *testing.T) {
+	if !Equal(nil, nil) {
+		t.Error("Equal(nil, nil) should be true (both become null)")
+	}
+	if Equal(nil, Int(0)) {
+		t.Error("Equal(nil, 0) should be false")
+	}
+}
+
+func TestUintConstructor(t *testing.T) {
+	v := Uint(0)
+	n, ok := v.AsInt()
+	if !ok || n != 0 {
+		t.Errorf("Uint(0): got %d, want 0", n)
+	}
+
+	v = Uint(18446744073709551615) // max uint64
+	if v.Kind != KindInt {
+		t.Fatal("Uint should produce KindInt")
+	}
+	if v.Int.Sign() <= 0 {
+		t.Error("max uint64 should be positive")
+	}
+	// max uint64 overflows int64
+	_, ok = v.AsInt()
+	if ok {
+		t.Error("max uint64 should overflow AsInt")
+	}
+}
+
+func TestAddNaN(t *testing.T) {
+	nan := &Value{Kind: KindFloat, Float: new(big.Float), FloatIsNaN: true}
+	r, err := Add(nan, Float64(1.0))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !r.FloatIsNaN {
+		t.Error("NaN + 1 should be NaN")
 	}
 }
