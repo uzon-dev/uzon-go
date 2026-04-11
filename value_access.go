@@ -77,7 +77,7 @@ func (v *Value) OrElse(fallback *Value) *Value {
 // --- Collection accessors ---
 
 // Len returns the number of elements or fields in a collection value.
-// Returns the string length (in runes) for KindString.
+// Returns the string length in Unicode scalar values (codepoints) for KindString (§5.16.1).
 // Returns 0 for non-collection kinds.
 func (v *Value) Len() int {
 	switch v.Kind {
