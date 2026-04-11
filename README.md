@@ -2,6 +2,8 @@
 
 Go implementation of [UZON](https://uzon.dev), a typed, human-readable data expression format.
 
+Implements [UZON specification v0.6](https://uzon.dev). Requires Go 1.23 or later.
+
 ```
 go get github.com/uzon-dev/uzon-go
 ```
@@ -40,6 +42,16 @@ v := uzon.NewStruct(
 )
 ```
 
+**Convert to/from JSON:**
+
+```go
+// UZON → JSON
+jsonBytes, _ := json.Marshal(v)
+
+// JSON → UZON Value
+v, err := uzon.FromJSON(jsonBytes)
+```
+
 ## UZON Syntax
 
 ```
@@ -60,7 +72,7 @@ limits is {
 }
 ```
 
-See the full [UZON specification](https://uzon.dev) for details on types, expressions, functions, and more.
+UZON supports structs, lists, tuples, enums, tagged unions, functions, conditionals (`if`/`case`), arithmetic, environment variables (`env.VAR`), file imports (`from "path"`), struct overrides (`with`), extensions (`extends`), and a standard library (`std.*`). See the full [UZON specification](https://uzon.dev) for details.
 
 ---
 
@@ -78,7 +90,7 @@ Parses UZON source text and evaluates it, returning a `*Value`.
 ```go
 func ParseFile(path string) (*Value, error)
 ```
-Reads a `.uzon` file, parses, and evaluates it.
+Reads a `.uzon` file, parses, and evaluates it. File imports (`from`) are resolved relative to the file's directory.
 
 ### Go Reflection Encoding
 
@@ -207,7 +219,7 @@ Returns `v` if it is not undefined, otherwise returns `fallback`. Null is **not*
 ```go
 func (v *Value) Len() int
 ```
-Returns field count (struct), element count (list/tuple), or rune count (string). Returns 0 for other kinds.
+Returns field count (struct), element count (list/tuple), or codepoint count (string). Returns 0 for other kinds.
 
 ```go
 func (v *Value) Keys() []string
@@ -303,7 +315,7 @@ func Sub(a, b any) (*Value, error)      // a - b
 func Mul(a, b any) (*Value, error)      // a * b
 func Div(a, b any) (*Value, error)      // a / b (integer: error on zero; float: IEEE 754)
 func Mod(a, b any) (*Value, error)      // a % b (integer: error on zero)
-func Pow(a, b any) (*Value, error)      // a ^ b (integer: exponent must be 0..10000)
+func Pow(a, b any) (*Value, error)      // a ^ b (integer: exponent must be non-negative)
 func Negate(v any) (*Value, error)      // -v
 ```
 
@@ -390,21 +402,21 @@ Returns the UZON text as bytes. Implements `encoding.TextMarshaler`.
 type ValueKind int
 ```
 
-| Constant | Description |
-|---|---|
-| `KindNull` | Intentionally empty value |
-| `KindUndefined` | Missing value; resolved with `OrElse` |
-| `KindBool` | `true` or `false` |
-| `KindInt` | Arbitrary-precision integer |
-| `KindFloat` | IEEE 754 float |
-| `KindString` | UTF-8 string |
-| `KindStruct` | Named field collection |
-| `KindTuple` | Fixed-length heterogeneous sequence |
-| `KindList` | Variable-length homogeneous sequence |
-| `KindEnum` | Named variant from a fixed set |
-| `KindUnion` | Untagged union |
-| `KindTaggedUnion` | Union with variant labels |
-| `KindFunction` | First-class callable |
+| Constant           | Description                           |
+| ------------------ | ------------------------------------- |
+| `KindNull`         | Intentionally empty value             |
+| `KindUndefined`    | Missing value; resolved with `OrElse` |
+| `KindBool`         | `true` or `false`                     |
+| `KindInt`          | Arbitrary-precision integer           |
+| `KindFloat`        | IEEE 754 float                        |
+| `KindString`       | UTF-8 string                          |
+| `KindStruct`       | Named field collection                |
+| `KindTuple`        | Fixed-length heterogeneous sequence   |
+| `KindList`         | Variable-length homogeneous sequence  |
+| `KindEnum`         | Named variant from a fixed set        |
+| `KindUnion`        | Untagged union                        |
+| `KindTaggedUnion`  | Union with variant labels             |
+| `KindFunction`     | First-class callable                  |
 
 ```go
 func (k ValueKind) String() string // "null", "integer", "float", "string", ...
@@ -417,7 +429,8 @@ The central type. Exactly one typed field is meaningful, determined by `Kind`.
 ```go
 type Value struct {
     Kind       ValueKind
-    Type       *TypeInfo    // optional type annotation
+    Type       *TypeInfo    // optional type annotation or named type
+    Adoptable  bool         // untyped literal that adopts type from context (internal)
     Bool       bool
     Int        *big.Int
     Float      *big.Float
@@ -524,8 +537,8 @@ type UnionValue struct {
 type FunctionValue struct {
     Params     []FuncParam
     ReturnType *TypeInfo
-    Body       any // *ast.Node
-    Scope      any // captured lexical scope
+    Body       any // *ast.FunctionExpr, set during evaluation
+    Scope      any // *Scope, captured lexical scope
 }
 ```
 
@@ -558,7 +571,7 @@ func NewEvaluator() *Evaluator
 func (ev *Evaluator) EvalDocument(doc *ast.Document) (*Value, error)
 ```
 
-Low-level access to the evaluation engine. Most users should use `Parse` or `ParseFile` instead.
+Low-level access to the evaluation engine. Most users should use `Parse` or `ParseFile` instead. `NewEvaluator` captures the process environment for `env.*` expressions.
 
 ## License
 
