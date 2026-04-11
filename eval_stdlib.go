@@ -431,6 +431,24 @@ func (ev *Evaluator) stdSplit(evalArgs func() ([]*Value, error)) (*Value, error)
 	if vals[0].Kind != KindString || vals[1].Kind != KindString {
 		return nil, fmt.Errorf("std.split: both arguments must be string")
 	}
+	// §5.16.4: rules checked in order — first match wins
+	// 1. delimiter not in input → [input]
+	// 2. empty input → [""]
+	// 3. empty delimiter → split into Unicode scalar values
+	if !strings.Contains(vals[0].Str, vals[1].Str) {
+		return NewList([]*Value{String(vals[0].Str)}, &TypeInfo{BaseType: "string"}), nil
+	}
+	if vals[0].Str == "" {
+		return NewList([]*Value{String("")}, &TypeInfo{BaseType: "string"}), nil
+	}
+	if vals[1].Str == "" {
+		runes := []rune(vals[0].Str)
+		elems := make([]*Value, len(runes))
+		for i, r := range runes {
+			elems[i] = String(string(r))
+		}
+		return NewList(elems, &TypeInfo{BaseType: "string"}), nil
+	}
 	parts := strings.Split(vals[0].Str, vals[1].Str)
 	elems := make([]*Value, len(parts))
 	for i, p := range parts {
