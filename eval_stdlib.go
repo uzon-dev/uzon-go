@@ -84,7 +84,7 @@ func (ev *Evaluator) stdLen(evalArgs func() ([]*Value, error)) (*Value, error) {
 	case KindStruct:
 		return Int(int64(len(vals[0].Struct.Fields))), nil
 	case KindString:
-		return Int(int64(len(vals[0].Str))), nil
+		return Int(int64(len([]rune(vals[0].Str)))), nil
 	default:
 		return nil, fmt.Errorf("std.len: expected collection or string, got %s", vals[0].Kind)
 	}
