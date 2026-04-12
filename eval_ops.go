@@ -20,12 +20,29 @@ func isUnresolvedIdent(v *Value) bool {
 	return v != nil && v.Type != nil && v.Type.Name == "__ident__"
 }
 
+// promoteIntToFloat promotes an adoptable integer literal to a float value.
+// §5: "An integer literal may also adopt a float type when combined with a
+// float operand. This cross-category promotion applies only from integer
+// literals to float types, never the reverse."
+func promoteIntToFloat(intVal *Value, floatType *TypeInfo) *Value {
+	f := new(big.Float).SetPrec(53).SetInt(intVal.Int)
+	ti := floatType
+	if ti == nil {
+		ti = &TypeInfo{BaseType: "f64", BitSize: 64}
+	}
+	return &Value{Kind: KindFloat, Float: f, Type: ti}
+}
+
 // --- Binary and unary operations ---
 
 func (ev *Evaluator) evalBinary(e *ast.BinaryExpr, scope *Scope) (*Value, error) {
 	// Short-circuit evaluation for logical operators
 	if e.Op == token.And || e.Op == token.Or {
 		return ev.evalLogical(e, scope)
+	}
+	// §5.7: or else has special speculative evaluation
+	if e.Op == token.OrElse {
+		return ev.evalOrElse(e, scope)
 	}
 
 	left, err := ev.evalExpr(e.Left, scope)
@@ -38,17 +55,6 @@ func (ev *Evaluator) evalBinary(e *ast.BinaryExpr, scope *Scope) (*Value, error)
 	}
 
 	switch e.Op {
-	case token.OrElse:
-		if left.Kind == KindUndefined || isUnresolvedIdent(left) {
-			return right, nil
-		}
-		// §11.2.1: or else operands must have compatible types (null exempted)
-		if right.Kind != KindUndefined && !isUnresolvedIdent(right) &&
-			left.Kind != KindNull && right.Kind != KindNull &&
-			left.Kind != right.Kind {
-			return nil, fmt.Errorf("or else type mismatch: %s and %s", left.Kind, right.Kind)
-		}
-		return left, nil
 	case token.Is:
 		return ev.evalEquality(left, right, false)
 	case token.IsNot:
@@ -68,19 +74,69 @@ func (ev *Evaluator) evalBinary(e *ast.BinaryExpr, scope *Scope) (*Value, error)
 	}
 }
 
-// evalLogical implements short-circuit AND/OR (§5.1).
+// evalOrElse implements "or else" with speculative evaluation (§5.7, §D.5).
+// When left is defined, right is still evaluated for type checking but
+// runtime errors are suppressed; type errors always propagate.
+func (ev *Evaluator) evalOrElse(e *ast.BinaryExpr, scope *Scope) (*Value, error) {
+	left, err := ev.evalExpr(e.Left, scope)
+	if err != nil {
+		return nil, err
+	}
+	if left.Kind == KindUndefined || isUnresolvedIdent(left) {
+		right, err := ev.evalExpr(e.Right, scope)
+		if err != nil {
+			return nil, err
+		}
+		return right, nil
+	}
+	// Left is defined — speculatively evaluate right for type checking
+	right, rightErr := ev.evalExpr(e.Right, scope)
+	if rightErr != nil {
+		if isTypeError(rightErr) {
+			return nil, rightErr
+		}
+		// suppress runtime error
+	} else {
+		if !operandTypesCompatible(left, right) {
+			return nil, typeErrorf("or else type mismatch: %s and %s", left.Kind, right.Kind)
+		}
+		if left.Kind == KindNull && left.Type == nil && right.Type != nil && right.Type.Name != "" {
+			left.Type = right.Type
+		}
+	}
+	return left, nil
+}
+
+// evalLogical implements short-circuit AND/OR with speculative evaluation (§5.6, §D.5).
+// When short-circuiting, the skipped side is still evaluated for type checking.
 func (ev *Evaluator) evalLogical(e *ast.BinaryExpr, scope *Scope) (*Value, error) {
 	left, err := ev.evalExpr(e.Left, scope)
 	if err != nil {
 		return nil, err
 	}
 	if left.Kind != KindBool {
-		return nil, fmt.Errorf("logical %v requires bool, got %s", e.Op, left.Kind)
+		return nil, typeErrorf("logical %v requires bool, got %s", e.Op, left.Kind)
 	}
 	if e.Op == token.And && !left.Bool {
+		// §D.5: speculatively evaluate right for type checking
+		if right, rightErr := ev.evalExpr(e.Right, scope); rightErr != nil {
+			if isTypeError(rightErr) {
+				return nil, rightErr
+			}
+		} else if right.Kind != KindBool {
+			return nil, typeErrorf("logical %v requires bool, got %s", e.Op, right.Kind)
+		}
 		return Bool(false), nil
 	}
 	if e.Op == token.Or && left.Bool {
+		// §D.5: speculatively evaluate right for type checking
+		if right, rightErr := ev.evalExpr(e.Right, scope); rightErr != nil {
+			if isTypeError(rightErr) {
+				return nil, rightErr
+			}
+		} else if right.Kind != KindBool {
+			return nil, typeErrorf("logical %v requires bool, got %s", e.Op, right.Kind)
+		}
 		return Bool(true), nil
 	}
 	right, err := ev.evalExpr(e.Right, scope)
@@ -88,7 +144,7 @@ func (ev *Evaluator) evalLogical(e *ast.BinaryExpr, scope *Scope) (*Value, error
 		return nil, err
 	}
 	if right.Kind != KindBool {
-		return nil, fmt.Errorf("logical %v requires bool, got %s", e.Op, right.Kind)
+		return nil, typeErrorf("logical %v requires bool, got %s", e.Op, right.Kind)
 	}
 	return right, nil
 }
@@ -102,6 +158,13 @@ func (ev *Evaluator) evalEquality(left, right *Value, negated bool) (*Value, err
 	if isUnresolvedIdent(right) {
 		right = Undefined()
 	}
+	// §3.6: unwrap untagged unions — compare inner values
+	if left.Kind == KindUnion {
+		left = left.Union.Inner
+	}
+	if right.Kind == KindUnion {
+		right = right.Union.Inner
+	}
 	// null and undefined are comparable with any type
 	if left.Kind == KindNull || left.Kind == KindUndefined ||
 		right.Kind == KindNull || right.Kind == KindUndefined {
@@ -113,30 +176,30 @@ func (ev *Evaluator) evalEquality(left, right *Value, negated bool) (*Value, err
 	}
 	// §3.8: function equality is a type error
 	if left.Kind == KindFunction || right.Kind == KindFunction {
-		return nil, fmt.Errorf("functions cannot be compared for equality")
+		return nil, typeErrorf("functions cannot be compared for equality")
 	}
 	// §3.7.2: tagged union vs non-tagged-union comparison is a type error
 	if left.Kind == KindTaggedUnion && right.Kind != KindTaggedUnion {
-		return nil, fmt.Errorf("type error: cannot compare tagged union with %s", right.Kind)
+		return nil, typeErrorf("cannot compare tagged union with %s", right.Kind)
 	}
 	if left.Kind != KindTaggedUnion && right.Kind == KindTaggedUnion {
-		return nil, fmt.Errorf("type error: cannot compare %s with tagged union", left.Kind)
+		return nil, typeErrorf("cannot compare %s with tagged union", left.Kind)
 	}
 	// §5.2: comparing structs with different shapes
 	if left.Kind == KindStruct && right.Kind == KindStruct {
 		if len(left.Struct.Fields) != len(right.Struct.Fields) {
-			return nil, fmt.Errorf("cannot compare structs with different shapes")
+			return nil, typeErrorf("cannot compare structs with different shapes")
 		}
 		for _, f := range left.Struct.Fields {
 			if right.Struct.Get(f.Name) == nil {
-				return nil, fmt.Errorf("cannot compare structs with different shapes")
+				return nil, typeErrorf("cannot compare structs with different shapes")
 			}
 		}
 	}
 	// §5.2: tuples of different length are a type error
 	if left.Kind == KindTuple && right.Kind == KindTuple {
 		if len(left.Tuple.Elements) != len(right.Tuple.Elements) {
-			return nil, fmt.Errorf("type error: cannot compare tuples of different length (%d vs %d)",
+			return nil, typeErrorf("cannot compare tuples of different length (%d vs %d)",
 				len(left.Tuple.Elements), len(right.Tuple.Elements))
 		}
 	}
@@ -144,9 +207,16 @@ func (ev *Evaluator) evalEquality(left, right *Value, negated bool) (*Value, err
 	if left.Kind == KindList && right.Kind == KindList {
 		if left.List.ElementType != nil && right.List.ElementType != nil &&
 			left.List.ElementType.BaseType != right.List.ElementType.BaseType {
-			return nil, fmt.Errorf("type error: cannot compare lists with different element types (%s vs %s)",
+			return nil, typeErrorf("cannot compare lists with different element types (%s vs %s)",
 				left.List.ElementType.BaseType, right.List.ElementType.BaseType)
 		}
+	}
+
+	// §5: integer literal adopts float type for equality
+	if left.Kind == KindInt && right.Kind == KindFloat && left.Adoptable {
+		left = promoteIntToFloat(left, right.Type)
+	} else if left.Kind == KindFloat && right.Kind == KindInt && right.Adoptable {
+		right = promoteIntToFloat(right, left.Type)
 	}
 
 	eq := valuesEqual(left, right)
@@ -211,6 +281,8 @@ func valuesEqual(a, b *Value) bool {
 	case KindTaggedUnion:
 		return a.TaggedUnion.Tag == b.TaggedUnion.Tag &&
 			valuesEqual(a.TaggedUnion.Inner, b.TaggedUnion.Inner)
+	case KindUnion:
+		return valuesEqual(a.Union.Inner, b.Union.Inner)
 	default:
 		return false
 	}
@@ -218,20 +290,32 @@ func valuesEqual(a, b *Value) bool {
 
 // evalIn implements the "in" membership operator (§5.8.1).
 func (ev *Evaluator) evalIn(left, right *Value) (*Value, error) {
+	// §3.1: undefined in "in" is a runtime error
+	if left.Kind == KindUndefined || right.Kind == KindUndefined {
+		return nil, fmt.Errorf("'in' on undefined")
+	}
 	if right.Kind != KindList {
 		return nil, fmt.Errorf("'in' requires a list on the right side, got %s", right.Kind)
 	}
 	// §3.5 type-context inference: bare ident in "x in [enum_list]" resolves as variant
 	if isUnresolvedIdent(left) && len(right.List.Elements) > 0 {
+		resolved := false
 		for _, el := range right.List.Elements {
 			if el.Kind == KindEnum {
 				left = &Value{Kind: KindEnum, Enum: &EnumValue{
 					Variant:  left.Str,
 					Variants: el.Enum.Variants,
 				}, Type: el.Type}
+				resolved = true
 				break
 			}
 		}
+		if !resolved {
+			return nil, fmt.Errorf("'in' on undefined")
+		}
+	}
+	if isUnresolvedIdent(right) {
+		return nil, fmt.Errorf("'in' on undefined")
 	}
 	if len(right.List.Elements) > 0 && left.Kind != KindNull {
 		var listElem *Value
@@ -272,10 +356,13 @@ func (ev *Evaluator) evalIn(left, right *Value) (*Value, error) {
 	return Bool(false), nil
 }
 
-// unwrapTaggedUnion transparently unwraps tagged unions (§3.7.1).
+// unwrapTaggedUnion transparently unwraps tagged and untagged unions (§3.6, §3.7.1).
 func unwrapTaggedUnion(v *Value) *Value {
 	if v.Kind == KindTaggedUnion {
 		return v.TaggedUnion.Inner
+	}
+	if v.Kind == KindUnion {
+		return v.Union.Inner
 	}
 	return v
 }
@@ -323,7 +410,8 @@ func reconcileNumericTypes(left, right *Value) (*TypeInfo, error) {
 func (ev *Evaluator) evalArithmetic(op token.Type, left, right *Value) (*Value, error) {
 	left = unwrapTaggedUnion(left)
 	right = unwrapTaggedUnion(right)
-	if left.Kind == KindUndefined || right.Kind == KindUndefined {
+	if left.Kind == KindUndefined || right.Kind == KindUndefined ||
+		isUnresolvedIdent(left) || isUnresolvedIdent(right) {
 		return nil, fmt.Errorf("arithmetic on undefined")
 	}
 	// When both operands are adoptable (literals), the result remains
@@ -353,7 +441,24 @@ func (ev *Evaluator) evalArithmetic(op token.Type, left, right *Value) (*Value, 
 		result.Adoptable = bothAdoptable
 		return result, nil
 	}
-	return nil, fmt.Errorf("arithmetic requires same numeric type, got %s and %s", left.Kind, right.Kind)
+	// §5: integer literal adopts float type (cross-category promotion)
+	if left.Kind == KindInt && right.Kind == KindFloat && left.Adoptable {
+		promoted := promoteIntToFloat(left, right.Type)
+		ti, err := reconcileNumericTypes(promoted, right)
+		if err != nil {
+			return nil, fmt.Errorf("arithmetic: %w", err)
+		}
+		return ev.floatArith(op, promoted, right, ti)
+	}
+	if left.Kind == KindFloat && right.Kind == KindInt && right.Adoptable {
+		promoted := promoteIntToFloat(right, left.Type)
+		ti, err := reconcileNumericTypes(left, promoted)
+		if err != nil {
+			return nil, fmt.Errorf("arithmetic: %w", err)
+		}
+		return ev.floatArith(op, left, promoted, ti)
+	}
+	return nil, typeErrorf("arithmetic requires same numeric type, got %s and %s", left.Kind, right.Kind)
 }
 
 func (ev *Evaluator) intArith(op token.Type, a, b *big.Int, ti *TypeInfo) (*Value, error) {
@@ -450,6 +555,11 @@ func (ev *Evaluator) floatArith(op token.Type, left, right *Value, ti *TypeInfo)
 
 // evalConcat implements "++" string/list concatenation (§5.8.2).
 func (ev *Evaluator) evalConcat(left, right *Value) (*Value, error) {
+	// §3.1: undefined in concatenation is a runtime error
+	if left.Kind == KindUndefined || right.Kind == KindUndefined ||
+		isUnresolvedIdent(left) || isUnresolvedIdent(right) {
+		return nil, fmt.Errorf("'++' on undefined")
+	}
 	left = unwrapTaggedUnion(left)
 	right = unwrapTaggedUnion(right)
 	if left.Kind == KindString && right.Kind == KindString {
@@ -468,11 +578,16 @@ func (ev *Evaluator) evalConcat(left, right *Value) (*Value, error) {
 		elems = append(elems, right.List.Elements...)
 		return NewList(elems, left.List.ElementType), nil
 	}
-	return nil, fmt.Errorf("++ requires string or list operands, got %s and %s", left.Kind, right.Kind)
+	return nil, typeErrorf("++ requires string or list operands, got %s and %s", left.Kind, right.Kind)
 }
 
 // evalRepeat implements "**" string/list repetition.
 func (ev *Evaluator) evalRepeat(left, right *Value) (*Value, error) {
+	// §3.1: undefined in repetition is a runtime error
+	if left.Kind == KindUndefined || right.Kind == KindUndefined ||
+		isUnresolvedIdent(left) || isUnresolvedIdent(right) {
+		return nil, fmt.Errorf("'**' on undefined")
+	}
 	left = unwrapTaggedUnion(left)
 	right = unwrapTaggedUnion(right)
 	if right.Kind != KindInt {
@@ -492,13 +607,18 @@ func (ev *Evaluator) evalRepeat(left, right *Value) (*Value, error) {
 		}
 		return NewList(elems, left.List.ElementType), nil
 	}
-	return nil, fmt.Errorf("** requires string or list left operand, got %s", left.Kind)
+	return nil, typeErrorf("** requires string or list left operand, got %s", left.Kind)
 }
 
 // evalComparison implements ordered comparison operators (§5.3).
 func (ev *Evaluator) evalComparison(op token.Type, left, right *Value) (*Value, error) {
+	// §3.1: undefined in comparison is a runtime error
+	if left.Kind == KindUndefined || right.Kind == KindUndefined ||
+		isUnresolvedIdent(left) || isUnresolvedIdent(right) {
+		return nil, fmt.Errorf("comparison on undefined")
+	}
 	if left.Kind == KindTaggedUnion && right.Kind == KindTaggedUnion {
-		return nil, fmt.Errorf("ordered comparison between two tagged union values is not allowed")
+		return nil, typeErrorf("ordered comparison between two tagged union values is not allowed")
 	}
 	left = unwrapTaggedUnion(left)
 	right = unwrapTaggedUnion(right)
@@ -518,10 +638,25 @@ func (ev *Evaluator) evalComparison(op token.Type, left, right *Value) (*Value, 
 		}
 		return Bool(cmpResult(op, left.Float.Cmp(right.Float))), nil
 	}
+	// §5: integer literal adopts float type for comparison
+	if left.Kind == KindInt && right.Kind == KindFloat && left.Adoptable {
+		promoted := promoteIntToFloat(left, right.Type)
+		if promoted.FloatIsNaN || right.FloatIsNaN {
+			return Bool(false), nil
+		}
+		return Bool(cmpResult(op, promoted.Float.Cmp(right.Float))), nil
+	}
+	if left.Kind == KindFloat && right.Kind == KindInt && right.Adoptable {
+		promoted := promoteIntToFloat(right, left.Type)
+		if left.FloatIsNaN || promoted.FloatIsNaN {
+			return Bool(false), nil
+		}
+		return Bool(cmpResult(op, left.Float.Cmp(promoted.Float))), nil
+	}
 	if left.Kind == KindString && right.Kind == KindString {
 		return Bool(cmpResult(op, strings.Compare(left.Str, right.Str))), nil
 	}
-	return nil, fmt.Errorf("comparison requires same numeric or string type, got %s and %s", left.Kind, right.Kind)
+	return nil, typeErrorf("comparison requires same numeric or string type, got %s and %s", left.Kind, right.Kind)
 }
 
 func cmpResult(op token.Type, cmp int) bool {
@@ -549,12 +684,15 @@ func (ev *Evaluator) evalUnary(e *ast.UnaryExpr, scope *Scope) (*Value, error) {
 			return &Value{Kind: KindInt, Int: new(big.Int).Neg(operand.Int), Type: operand.Type}, nil
 		}
 		if operand.Kind == KindFloat {
+			if operand.FloatIsNaN {
+				return &Value{Kind: KindFloat, Float: new(big.Float), FloatIsNaN: true, Type: operand.Type}, nil
+			}
 			return &Value{Kind: KindFloat, Float: new(big.Float).Neg(operand.Float), Type: operand.Type}, nil
 		}
 		return nil, fmt.Errorf("unary minus requires numeric operand, got %s", operand.Kind)
 	case token.Not:
 		if operand.Kind != KindBool {
-			return nil, fmt.Errorf("'not' requires bool, got %s", operand.Kind)
+			return nil, typeErrorf("'not' requires bool, got %s", operand.Kind)
 		}
 		return Bool(!operand.Bool), nil
 	}
@@ -563,25 +701,33 @@ func (ev *Evaluator) evalUnary(e *ast.UnaryExpr, scope *Scope) (*Value, error) {
 
 // --- Control flow ---
 
-// evalIf implements "if cond then a else b" (§5.9).
+// evalIf implements "if cond then a else b" (§5.9, §D.5).
 // Both branches are speculatively evaluated for type checking.
+// Type errors always propagate; runtime errors in non-selected branches are suppressed.
 func (ev *Evaluator) evalIf(e *ast.IfExpr, scope *Scope) (*Value, error) {
 	cond, err := ev.evalExpr(e.Cond, scope)
 	if err != nil {
 		return nil, err
 	}
 	if cond.Kind != KindBool {
-		return nil, fmt.Errorf("if condition must be bool, got %s", cond.Kind)
+		return nil, typeErrorf("if condition must be bool, got %s", cond.Kind)
 	}
 	if cond.Bool {
 		thenVal, err := ev.evalExpr(e.Then, scope)
 		if err != nil {
 			return nil, err
 		}
-		if elseVal, elseErr := ev.evalExpr(e.Else, scope); elseErr == nil {
-			if thenVal.Kind != elseVal.Kind {
-				return nil, fmt.Errorf("if/else branch type mismatch: then is %s, else is %s", thenVal.Kind, elseVal.Kind)
+		// §D.5: speculatively evaluate else branch
+		elseVal, elseErr := ev.evalExpr(e.Else, scope)
+		if elseErr != nil {
+			if isTypeError(elseErr) {
+				return nil, elseErr
 			}
+		} else {
+			if !branchTypesCompatible(thenVal, elseVal) {
+				return nil, typeErrorf("if/else branch type mismatch: then is %s, else is %s", thenVal.Kind, elseVal.Kind)
+			}
+			adoptNamedType(thenVal, elseVal)
 		}
 		return thenVal, nil
 	}
@@ -589,12 +735,264 @@ func (ev *Evaluator) evalIf(e *ast.IfExpr, scope *Scope) (*Value, error) {
 	if err != nil {
 		return nil, err
 	}
-	if thenVal, thenErr := ev.evalExpr(e.Then, scope); thenErr == nil {
-		if thenVal.Kind != elseVal.Kind {
-			return nil, fmt.Errorf("if/else branch type mismatch: then is %s, else is %s", thenVal.Kind, elseVal.Kind)
+	// §D.5: speculatively evaluate then branch
+	thenVal, thenErr := ev.evalExpr(e.Then, scope)
+	if thenErr != nil {
+		if isTypeError(thenErr) {
+			return nil, thenErr
 		}
+	} else {
+		if !branchTypesCompatible(thenVal, elseVal) {
+			return nil, typeErrorf("if/else branch type mismatch: then is %s, else is %s", thenVal.Kind, elseVal.Kind)
+		}
+		adoptNamedType(elseVal, thenVal)
 	}
 	return elseVal, nil
+}
+
+// branchTypesCompatible checks if two branch values have compatible types.
+// null is compatible with any type (§5.9, §5.10).
+// §5: adoptable int literal is compatible with float (cross-category adoption).
+func branchTypesCompatible(a, b *Value) bool {
+	if a.Kind == b.Kind {
+		return true
+	}
+	if a.Kind == KindNull || b.Kind == KindNull {
+		return true
+	}
+	// §5: int literal can adopt float type
+	if a.Kind == KindInt && b.Kind == KindFloat && a.Adoptable {
+		return true
+	}
+	if a.Kind == KindFloat && b.Kind == KindInt && b.Adoptable {
+		return true
+	}
+	return false
+}
+
+// operandTypesCompatible checks if two values have compatible types for operators
+// like "or else" that require same type. null and undefined are exempt.
+func operandTypesCompatible(left, right *Value) bool {
+	if right.Kind == KindUndefined || isUnresolvedIdent(right) {
+		return true
+	}
+	if left.Kind == KindNull || right.Kind == KindNull {
+		return true
+	}
+	if left.Kind == right.Kind {
+		return true
+	}
+	// §5: int literal can adopt float type
+	if left.Kind == KindInt && right.Kind == KindFloat && left.Adoptable {
+		return true
+	}
+	if left.Kind == KindFloat && right.Kind == KindInt && right.Adoptable {
+		return true
+	}
+	return false
+}
+
+// adoptNamedType propagates a named type from other to result when result is
+// null without a type. This ensures null + named type preserves the named type.
+func adoptNamedType(result, other *Value) {
+	if result.Kind == KindNull && result.Type == nil && other.Type != nil && other.Type.Name != "" {
+		result.Type = other.Type
+	}
+}
+
+// unionHasMemberType checks if a type is among the union's declared member types.
+func unionHasMemberType(members []*TypeInfo, ti *TypeInfo) bool {
+	if ti == nil {
+		return false
+	}
+	for _, m := range members {
+		if m.BaseType == ti.BaseType {
+			return true
+		}
+		if m.Name != "" && m.Name == ti.Name {
+			return true
+		}
+	}
+	return false
+}
+
+// narrowScrutinee returns the narrowed value for a case type branch (§5.10).
+// For the matched branch of a union, returns the inner value.
+// For non-matched branches, returns a zero value of the when type for
+// speculative evaluation. Returns nil if narrowing is not applicable.
+func (ev *Evaluator) narrowScrutinee(scrutinee *Value, ti *TypeInfo, matched bool) *Value {
+	if ti == nil {
+		return nil
+	}
+	if matched {
+		// Selected branch: use the actual inner value.
+		switch scrutinee.Kind {
+		case KindUnion:
+			return scrutinee.Union.Inner
+		case KindTaggedUnion:
+			return scrutinee.TaggedUnion.Inner
+		default:
+			return scrutinee
+		}
+	}
+	// Non-selected branch: create a zero value for type checking.
+	return zeroValueForType(ti)
+}
+
+// zeroValueForType creates a zero value for the given type, used for
+// speculative evaluation of non-selected case type branches.
+func zeroValueForType(ti *TypeInfo) *Value {
+	if ti == nil {
+		return nil
+	}
+	switch {
+	case ti.BaseType == "null":
+		return Null()
+	case ti.BaseType == "bool":
+		return Bool(false)
+	case ti.BaseType == "string":
+		return String("")
+	case isIntegerType(ti.BaseType):
+		v := Int(0)
+		v.Type = ti
+		return v
+	case isFloatType(ti.BaseType):
+		v := Float64(0)
+		v.Type = ti
+		return v
+	default:
+		// Named/struct types: return undefined to suppress speculative errors.
+		return Undefined()
+	}
+}
+
+// narrowScrutineeNamed returns the narrowed value for a case named branch (§5.10).
+// For the matched branch, returns the inner value of the tagged union.
+// For non-matched branches, returns a zero value of the variant's inner type
+// for speculative evaluation. Returns nil if narrowing is not applicable.
+func (ev *Evaluator) narrowScrutineeNamed(scrutinee *Value, variantName string, matched bool) *Value {
+	if scrutinee.Kind != KindTaggedUnion {
+		return nil
+	}
+	if matched {
+		return scrutinee.TaggedUnion.Inner
+	}
+	// Non-selected branch: find the variant's inner type and create a zero value.
+	for _, v := range scrutinee.TaggedUnion.Variants {
+		if v.Name == variantName {
+			return zeroValueForType(v.Type)
+		}
+	}
+	return Undefined()
+}
+
+// narrowElseType narrows the else branch of case type to the remaining types
+// not matched by any when clause (§5.10). When the else branch is selected
+// (elseSelected=true), uses the actual inner value; otherwise creates a zero
+// value for speculative evaluation.
+func (ev *Evaluator) narrowElseType(scrutinee *Value, whens []*ast.WhenClause, elseSelected bool) *Value {
+	if scrutinee.Kind == KindUnion {
+		if elseSelected {
+			return scrutinee.Union.Inner
+		}
+		coveredTypes := make(map[string]bool)
+		for _, w := range whens {
+			if w.TypeExpr != nil {
+				ti := ev.resolveTypeExpr(w.TypeExpr)
+				if ti != nil {
+					coveredTypes[ti.BaseType] = true
+				}
+			}
+		}
+		var remaining []*TypeInfo
+		for _, mt := range scrutinee.Union.MemberTypes {
+			if !coveredTypes[mt.BaseType] {
+				remaining = append(remaining, mt)
+			}
+		}
+		if len(remaining) == 1 {
+			return zeroValueForType(remaining[0])
+		}
+	}
+	if scrutinee.Kind == KindTaggedUnion {
+		if elseSelected {
+			return scrutinee.TaggedUnion.Inner
+		}
+		coveredTypes := make(map[string]bool)
+		for _, w := range whens {
+			if w.TypeExpr != nil {
+				ti := ev.resolveTypeExpr(w.TypeExpr)
+				if ti != nil {
+					coveredTypes[ti.BaseType] = true
+				}
+			}
+		}
+		var remaining []*TypeInfo
+		seen := make(map[string]bool)
+		for _, v := range scrutinee.TaggedUnion.Variants {
+			if v.Type != nil && !coveredTypes[v.Type.BaseType] && !seen[v.Type.BaseType] {
+				remaining = append(remaining, v.Type)
+				seen[v.Type.BaseType] = true
+			}
+		}
+		if len(remaining) == 1 {
+			return zeroValueForType(remaining[0])
+		}
+	}
+	// For non-union values or when multiple remaining types: use the
+	// scrutinee directly if selected, else Undefined for speculative.
+	if elseSelected {
+		return scrutinee
+	}
+	return Undefined()
+}
+
+// narrowElseNamed narrows the else branch of case named to the remaining
+// variants not matched by any when clause (§5.10).
+func (ev *Evaluator) narrowElseNamed(scrutinee *Value, whens []*ast.WhenClause, elseSelected bool) *Value {
+	if scrutinee.Kind != KindTaggedUnion {
+		return nil
+	}
+	if elseSelected {
+		return scrutinee.TaggedUnion.Inner
+	}
+	coveredVariants := make(map[string]bool)
+	for _, w := range whens {
+		if w.VariantName != "" {
+			coveredVariants[w.VariantName] = true
+		}
+	}
+	var remaining []TaggedVariant
+	for _, v := range scrutinee.TaggedUnion.Variants {
+		if !coveredVariants[v.Name] {
+			remaining = append(remaining, v)
+		}
+	}
+	if len(remaining) == 1 {
+		return zeroValueForType(remaining[0].Type)
+	}
+	// Multiple remaining: use undefined for speculative evaluation.
+	return Undefined()
+}
+
+// taggedUnionHasInnerType checks whether any variant of a tagged union has
+// the given inner type. Used for case type member validation (§5.10).
+func taggedUnionHasInnerType(variants []TaggedVariant, ti *TypeInfo) bool {
+	if ti == nil {
+		return false
+	}
+	for _, v := range variants {
+		if v.Type == nil {
+			continue
+		}
+		if v.Type.BaseType == ti.BaseType {
+			return true
+		}
+		if v.Type.Name != "" && v.Type.Name == ti.Name {
+			return true
+		}
+	}
+	return false
 }
 
 // evalCase implements pattern matching (§5.10).
@@ -612,28 +1010,63 @@ func (ev *Evaluator) evalCase(e *ast.CaseExpr, scope *Scope) (*Value, error) {
 	// §5.10: validate scrutinee type for dispatch modes
 	switch e.Mode {
 	case "type":
-		if scrutinee.Kind != KindUnion {
-			return nil, fmt.Errorf("case type: scrutinee must be an untagged union, got %s", scrutinee.Kind)
-		}
+		// case type works on any value (§5.10), consistent with is type.
 	case "named":
 		if scrutinee.Kind != KindTaggedUnion {
-			return nil, fmt.Errorf("case named: scrutinee must be a tagged union, got %s", scrutinee.Kind)
+			return nil, typeErrorf("case named: scrutinee must be a tagged union, got %s", scrutinee.Kind)
+		}
+	default:
+		// §5.10: value matching — union scrutinees are ill-defined (use case type instead)
+		if scrutinee.Kind == KindUnion || scrutinee.Kind == KindTaggedUnion {
+			return nil, typeErrorf("case value: cannot match on %s (use 'case type' or 'case named' instead)", scrutinee.Kind)
+		}
+	}
+
+	// §5.10 branch narrowing: detect scrutinee identifier for case type / case named.
+	var narrowName string
+	if e.Mode == "type" || e.Mode == "named" {
+		if ident, ok := e.Scrutinee.(*ast.IdentExpr); ok {
+			narrowName = ident.Name
 		}
 	}
 
 	var result *Value
-	var branchTypes []ValueKind
+	var branchValues []*Value
 
 	for _, w := range e.Whens {
 		matched := false
 
 		switch e.Mode {
 		case "type":
-			// Type dispatch: match inner value's type against when type
+			// Type dispatch: works on any value (§5.10).
+			// For unions, checks inner value; for others, checks concrete type.
 			ti := ev.resolveTypeExpr(w.TypeExpr)
-			matched = ev.valueMatchesType(scrutinee.Union.Inner, ti)
+			// §5.10: when scrutinee is a union (tagged or untagged), validate
+			// when types against the union's member types.
+			if scrutinee.Kind == KindUnion {
+				if !unionHasMemberType(scrutinee.Union.MemberTypes, ti) {
+					return nil, typeErrorf("case type: %s is not a member of the union", ti.BaseType)
+				}
+			}
+			if scrutinee.Kind == KindTaggedUnion {
+				if !taggedUnionHasInnerType(scrutinee.TaggedUnion.Variants, ti) {
+					return nil, typeErrorf("case type: %s is not a member type of the tagged union", ti.BaseType)
+				}
+			}
+			matched = ev.valueMatchesType(scrutinee, ti)
 		case "named":
 			// Variant dispatch: match tagged union's tag
+			// §5.10: validate variant name against tagged union's variant list
+			variantValid := false
+			for _, v := range scrutinee.TaggedUnion.Variants {
+				if v.Name == w.VariantName {
+					variantValid = true
+					break
+				}
+			}
+			if !variantValid {
+				return nil, typeErrorf("case named: '%s' is not a variant of this tagged union", w.VariantName)
+			}
 			if scrutinee.TaggedUnion.Tag == w.VariantName {
 				matched = true
 			}
@@ -662,9 +1095,33 @@ func (ev *Evaluator) evalCase(e *ast.CaseExpr, scope *Scope) (*Value, error) {
 			}
 		}
 
-		thenVal, thenErr := ev.evalExpr(w.Then, scope)
-		if thenErr == nil {
-			branchTypes = append(branchTypes, thenVal.Kind)
+		// §5.10 branch narrowing for case type / case named:
+		// inside each when branch, the scrutinee is narrowed.
+		branchScope := scope
+		if narrowName != "" {
+			switch e.Mode {
+			case "type":
+				ti := ev.resolveTypeExpr(w.TypeExpr)
+				if narrowed := ev.narrowScrutinee(scrutinee, ti, matched); narrowed != nil {
+					branchScope = newScope(scope)
+					branchScope.set(narrowName, narrowed)
+				}
+			case "named":
+				if narrowed := ev.narrowScrutineeNamed(scrutinee, w.VariantName, matched); narrowed != nil {
+					branchScope = newScope(scope)
+					branchScope.set(narrowName, narrowed)
+				}
+			}
+		}
+
+		thenVal, thenErr := ev.evalExpr(w.Then, branchScope)
+		if thenErr != nil {
+			// §D.5: type errors always propagate, runtime errors suppressed in non-selected
+			if isTypeError(thenErr) {
+				return nil, thenErr
+			}
+		} else {
+			branchValues = append(branchValues, thenVal)
 		}
 		if matched && result == nil {
 			if thenErr != nil {
@@ -674,16 +1131,39 @@ func (ev *Evaluator) evalCase(e *ast.CaseExpr, scope *Scope) (*Value, error) {
 		}
 	}
 
-	elseVal, elseErr := ev.evalExpr(e.Else, scope)
-	if elseErr == nil {
-		branchTypes = append(branchTypes, elseVal.Kind)
+	// §5.10: else branch narrowing — narrow to remaining types/variants.
+	elseScope := scope
+	if narrowName != "" {
+		elseSelected := result == nil
+		switch e.Mode {
+		case "type":
+			if narrowed := ev.narrowElseType(scrutinee, e.Whens, elseSelected); narrowed != nil {
+				elseScope = newScope(scope)
+				elseScope.set(narrowName, narrowed)
+			}
+		case "named":
+			if narrowed := ev.narrowElseNamed(scrutinee, e.Whens, elseSelected); narrowed != nil {
+				elseScope = newScope(scope)
+				elseScope.set(narrowName, narrowed)
+			}
+		}
+	}
+	elseVal, elseErr := ev.evalExpr(e.Else, elseScope)
+	if elseErr != nil {
+		if isTypeError(elseErr) {
+			return nil, elseErr
+		}
+	} else {
+		branchValues = append(branchValues, elseVal)
 	}
 
-	// §5.9/§5.10: all branches must have the same type
-	if len(branchTypes) > 1 {
-		for i := 1; i < len(branchTypes); i++ {
-			if branchTypes[i] != branchTypes[0] {
-				return nil, fmt.Errorf("case branch type mismatch: got %s and %s", branchTypes[0], branchTypes[i])
+	// §5.9/§5.10: all branches must produce the same result type.
+	// Uses branchTypesCompatible to handle cross-category int→float adoption.
+	if len(branchValues) > 1 {
+		ref := branchValues[0]
+		for _, bv := range branchValues[1:] {
+			if !branchTypesCompatible(ref, bv) {
+				return nil, typeErrorf("case branch type mismatch: got %s and %s", ref.Kind, bv.Kind)
 			}
 		}
 	}
@@ -715,14 +1195,17 @@ func (ev *Evaluator) evalIsType(e *ast.IsTypeExpr, scope *Scope) (*Value, error)
 }
 
 // valueMatchesType checks if a value matches a type expression (for "is type" / "case type").
-// For union values, the inner value is checked against the type.
+// For union/tagged union values, the inner value is checked against the type (§5.2).
 func (ev *Evaluator) valueMatchesType(val *Value, ti *TypeInfo) bool {
 	if val == nil || ti == nil {
 		return false
 	}
-	// Unwrap union: check the inner value's type
+	// Unwrap union/tagged union: check the inner value's type
 	if val.Kind == KindUnion {
 		return ev.valueMatchesType(val.Union.Inner, ti)
+	}
+	if val.Kind == KindTaggedUnion {
+		return ev.valueMatchesType(val.TaggedUnion.Inner, ti)
 	}
 	switch val.Kind {
 	case KindNull:
@@ -730,15 +1213,17 @@ func (ev *Evaluator) valueMatchesType(val *Value, ti *TypeInfo) bool {
 	case KindBool:
 		return ti.BaseType == "bool" || ti.Name == "bool"
 	case KindInt:
-		if ti.BaseType != "" {
-			return isIntegerType(ti.BaseType)
+		valType := val.Type
+		if valType == nil {
+			valType = &TypeInfo{BaseType: "i64", BitSize: 64, Signed: true}
 		}
-		return ti.Name == "i64" || ti.Name == "integer"
+		return valType.BaseType == ti.BaseType
 	case KindFloat:
-		if ti.BaseType != "" {
-			return isFloatType(ti.BaseType)
+		valType := val.Type
+		if valType == nil {
+			valType = &TypeInfo{BaseType: "f64", BitSize: 64}
 		}
-		return ti.Name == "f64" || ti.Name == "float"
+		return valType.BaseType == ti.BaseType
 	case KindString:
 		return ti.BaseType == "string" || ti.Name == "string"
 	case KindStruct:

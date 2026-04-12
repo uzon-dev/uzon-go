@@ -11,6 +11,17 @@ import (
 	"github.com/uzon-dev/uzon-go/ast"
 )
 
+// unwrapUnion transparently unwraps union and tagged union values (§3.7.1).
+func unwrapUnion(v *Value) *Value {
+	if v.Kind == KindTaggedUnion {
+		return v.TaggedUnion.Inner
+	}
+	if v.Kind == KindUnion {
+		return v.Union.Inner
+	}
+	return v
+}
+
 // --- Standard library (§5.16) ---
 
 func (ev *Evaluator) evalStdCall(name string, args []ast.Expr, scope *Scope) (*Value, error) {
@@ -20,6 +31,10 @@ func (ev *Evaluator) evalStdCall(name string, args []ast.Expr, scope *Scope) (*V
 			v, err := ev.evalExpr(a, scope)
 			if err != nil {
 				return nil, err
+			}
+			// §D.2: undefined as argument is a runtime error
+			if v.Kind == KindUndefined || isUnresolvedIdent(v) {
+				return nil, fmt.Errorf("std.%s: undefined argument", name)
 			}
 			vals = append(vals, v)
 		}
@@ -76,6 +91,7 @@ func (ev *Evaluator) stdLen(evalArgs func() ([]*Value, error)) (*Value, error) {
 	if len(vals) != 1 {
 		return nil, fmt.Errorf("std.len expects 1 argument, got %d", len(vals))
 	}
+	vals[0] = unwrapUnion(vals[0])
 	switch vals[0].Kind {
 	case KindList:
 		return Int(int64(len(vals[0].List.Elements))), nil
@@ -86,7 +102,7 @@ func (ev *Evaluator) stdLen(evalArgs func() ([]*Value, error)) (*Value, error) {
 	case KindString:
 		return Int(int64(len([]rune(vals[0].Str)))), nil
 	default:
-		return nil, fmt.Errorf("std.len: expected collection or string, got %s", vals[0].Kind)
+		return nil, typeErrorf("std.len: expected collection or string, got %s", vals[0].Kind)
 	}
 }
 
@@ -98,9 +114,41 @@ func (ev *Evaluator) stdHas(evalArgs func() ([]*Value, error)) (*Value, error) {
 	if len(vals) != 2 {
 		return nil, fmt.Errorf("std.has expects 2 arguments, got %d", len(vals))
 	}
-	coll, key := vals[0], vals[1]
+	coll, key := unwrapUnion(vals[0]), vals[1]
 	switch coll.Kind {
 	case KindList:
+		// §5.16.1: type compatibility check (same rules as `in`)
+		if len(coll.List.Elements) > 0 && key.Kind != KindNull {
+			var listElem *Value
+			for _, el := range coll.List.Elements {
+				if el.Kind != KindNull {
+					listElem = el
+					break
+				}
+			}
+			if listElem != nil && key.Kind != listElem.Kind {
+				return nil, typeErrorf("std.has: type mismatch: searching for %s in list of %s", key.Kind, listElem.Kind)
+			}
+			if listElem != nil && key.Kind == KindEnum && listElem.Kind == KindEnum {
+				lt, rt := key.Type, listElem.Type
+				if lt != nil && rt != nil && lt.Name != "" && rt.Name != "" && lt.Name != rt.Name {
+					return nil, typeErrorf("std.has: enum type mismatch: %s vs %s", lt.Name, rt.Name)
+				}
+			}
+			if listElem != nil && key.Kind == KindInt && listElem.Kind == KindInt {
+				lt := key.Type
+				rt := listElem.Type
+				if lt == nil {
+					lt = &TypeInfo{BaseType: "i64", BitSize: 64, Signed: true}
+				}
+				if rt == nil {
+					rt = &TypeInfo{BaseType: "i64", BitSize: 64, Signed: true}
+				}
+				if lt.BaseType != rt.BaseType {
+					return nil, typeErrorf("std.has: numeric type mismatch: %s vs %s", lt.BaseType, rt.BaseType)
+				}
+			}
+		}
 		for _, e := range coll.List.Elements {
 			if valuesEqual(e, key) {
 				return Bool(true), nil
@@ -109,11 +157,11 @@ func (ev *Evaluator) stdHas(evalArgs func() ([]*Value, error)) (*Value, error) {
 		return Bool(false), nil
 	case KindStruct:
 		if key.Kind != KindString {
-			return nil, fmt.Errorf("std.has: struct key must be string")
+			return nil, typeErrorf("std.has: struct key must be string")
 		}
 		return Bool(coll.Struct.Get(key.Str) != nil), nil
 	default:
-		return nil, fmt.Errorf("std.has: expected collection, got %s", coll.Kind)
+		return nil, typeErrorf("std.has: expected collection, got %s", coll.Kind)
 	}
 }
 
@@ -125,11 +173,11 @@ func (ev *Evaluator) stdGet(evalArgs func() ([]*Value, error)) (*Value, error) {
 	if len(vals) != 2 {
 		return nil, fmt.Errorf("std.get expects 2 arguments, got %d", len(vals))
 	}
-	coll, key := vals[0], vals[1]
+	coll, key := unwrapUnion(vals[0]), vals[1]
 	switch coll.Kind {
 	case KindList:
 		if key.Kind != KindInt {
-			return nil, fmt.Errorf("std.get: list index must be integer")
+			return nil, typeErrorf("std.get: list index must be integer")
 		}
 		idx := int(key.Int.Int64())
 		if idx >= 0 && idx < len(coll.List.Elements) {
@@ -138,7 +186,7 @@ func (ev *Evaluator) stdGet(evalArgs func() ([]*Value, error)) (*Value, error) {
 		return Undefined(), nil
 	case KindTuple:
 		if key.Kind != KindInt {
-			return nil, fmt.Errorf("std.get: tuple index must be integer")
+			return nil, typeErrorf("std.get: tuple index must be integer")
 		}
 		idx := int(key.Int.Int64())
 		if idx >= 0 && idx < len(coll.Tuple.Elements) {
@@ -147,7 +195,7 @@ func (ev *Evaluator) stdGet(evalArgs func() ([]*Value, error)) (*Value, error) {
 		return Undefined(), nil
 	case KindStruct:
 		if key.Kind != KindString {
-			return nil, fmt.Errorf("std.get: struct key must be string")
+			return nil, typeErrorf("std.get: struct key must be string")
 		}
 		v := coll.Struct.Get(key.Str)
 		if v == nil {
@@ -155,7 +203,7 @@ func (ev *Evaluator) stdGet(evalArgs func() ([]*Value, error)) (*Value, error) {
 		}
 		return v, nil
 	default:
-		return nil, fmt.Errorf("std.get: expected collection, got %s", coll.Kind)
+		return nil, typeErrorf("std.get: expected collection, got %s", coll.Kind)
 	}
 }
 
@@ -168,7 +216,7 @@ func (ev *Evaluator) stdKeys(evalArgs func() ([]*Value, error)) (*Value, error) 
 		return nil, fmt.Errorf("std.keys expects 1 argument, got %d", len(vals))
 	}
 	if vals[0].Kind != KindStruct {
-		return nil, fmt.Errorf("std.keys: expected struct, got %s", vals[0].Kind)
+		return nil, typeErrorf("std.keys: expected struct, got %s", vals[0].Kind)
 	}
 	var elems []*Value
 	for _, f := range vals[0].Struct.Fields {
@@ -186,7 +234,7 @@ func (ev *Evaluator) stdValues(evalArgs func() ([]*Value, error)) (*Value, error
 		return nil, fmt.Errorf("std.values expects 1 argument, got %d", len(vals))
 	}
 	if vals[0].Kind != KindStruct {
-		return nil, fmt.Errorf("std.values: expected struct, got %s", vals[0].Kind)
+		return nil, typeErrorf("std.values: expected struct, got %s", vals[0].Kind)
 	}
 	var elems []*Value
 	for _, f := range vals[0].Struct.Fields {
@@ -205,10 +253,10 @@ func (ev *Evaluator) stdMap(evalArgs func() ([]*Value, error)) (*Value, error) {
 	}
 	list, fn := vals[0], vals[1]
 	if list.Kind != KindList {
-		return nil, fmt.Errorf("std.map: first argument must be list")
+		return nil, typeErrorf("std.map: first argument must be list")
 	}
 	if fn.Kind != KindFunction {
-		return nil, fmt.Errorf("std.map: second argument must be function")
+		return nil, typeErrorf("std.map: second argument must be function")
 	}
 	var results []*Value
 	for _, elem := range list.List.Elements {
@@ -231,10 +279,10 @@ func (ev *Evaluator) stdFilter(evalArgs func() ([]*Value, error)) (*Value, error
 	}
 	list, fn := vals[0], vals[1]
 	if list.Kind != KindList {
-		return nil, fmt.Errorf("std.filter: first argument must be list")
+		return nil, typeErrorf("std.filter: first argument must be list")
 	}
 	if fn.Kind != KindFunction {
-		return nil, fmt.Errorf("std.filter: second argument must be function")
+		return nil, typeErrorf("std.filter: second argument must be function")
 	}
 	if fn.Function.ReturnType != nil && fn.Function.ReturnType.BaseType != "bool" {
 		return nil, fmt.Errorf("std.filter: function must return bool, got %s", fn.Function.ReturnType.BaseType)
@@ -265,10 +313,10 @@ func (ev *Evaluator) stdReduce(evalArgs func() ([]*Value, error)) (*Value, error
 	}
 	list, initial, fn := vals[0], vals[1], vals[2]
 	if list.Kind != KindList {
-		return nil, fmt.Errorf("std.reduce: first argument must be list")
+		return nil, typeErrorf("std.reduce: first argument must be list")
 	}
 	if fn.Kind != KindFunction {
-		return nil, fmt.Errorf("std.reduce: third argument must be function")
+		return nil, typeErrorf("std.reduce: third argument must be function")
 	}
 	// §5.16.2: initial value type must match function return type
 	if fn.Kind == KindFunction && fn.Function.ReturnType != nil {
@@ -311,10 +359,10 @@ func (ev *Evaluator) stdSort(evalArgs func() ([]*Value, error)) (*Value, error) 
 	}
 	list, fn := vals[0], vals[1]
 	if list.Kind != KindList {
-		return nil, fmt.Errorf("std.sort: first argument must be list")
+		return nil, typeErrorf("std.sort: first argument must be list")
 	}
 	if fn.Kind != KindFunction {
-		return nil, fmt.Errorf("std.sort: second argument must be function")
+		return nil, typeErrorf("std.sort: second argument must be function")
 	}
 	if len(fn.Function.Params) != 2 {
 		return nil, fmt.Errorf("std.sort: comparator must take exactly 2 parameters, got %d", len(fn.Function.Params))
@@ -352,7 +400,7 @@ func (ev *Evaluator) stdIsNan(evalArgs func() ([]*Value, error)) (*Value, error)
 		return nil, err
 	}
 	if len(vals) != 1 || vals[0].Kind != KindFloat {
-		return nil, fmt.Errorf("std.isNan: expected float argument")
+		return nil, typeErrorf("std.isNan: expected float argument")
 	}
 	return Bool(vals[0].FloatIsNaN), nil
 }
@@ -363,7 +411,7 @@ func (ev *Evaluator) stdIsInf(evalArgs func() ([]*Value, error)) (*Value, error)
 		return nil, err
 	}
 	if len(vals) != 1 || vals[0].Kind != KindFloat {
-		return nil, fmt.Errorf("std.isInf: expected float argument")
+		return nil, typeErrorf("std.isInf: expected float argument")
 	}
 	return Bool(!vals[0].FloatIsNaN && vals[0].Float.IsInf()), nil
 }
@@ -374,7 +422,7 @@ func (ev *Evaluator) stdIsFinite(evalArgs func() ([]*Value, error)) (*Value, err
 		return nil, err
 	}
 	if len(vals) != 1 || vals[0].Kind != KindFloat {
-		return nil, fmt.Errorf("std.isFinite: expected float argument")
+		return nil, typeErrorf("std.isFinite: expected float argument")
 	}
 	return Bool(!vals[0].FloatIsNaN && !vals[0].Float.IsInf()), nil
 }
@@ -388,10 +436,10 @@ func (ev *Evaluator) stdJoin(evalArgs func() ([]*Value, error)) (*Value, error) 
 		return nil, fmt.Errorf("std.join expects 2 arguments, got %d", len(vals))
 	}
 	if vals[0].Kind != KindList {
-		return nil, fmt.Errorf("std.join: first argument must be [string]")
+		return nil, typeErrorf("std.join: first argument must be [string]")
 	}
 	if vals[1].Kind != KindString {
-		return nil, fmt.Errorf("std.join: separator must be string")
+		return nil, typeErrorf("std.join: separator must be string")
 	}
 	var parts []string
 	for _, elem := range vals[0].List.Elements {
@@ -412,7 +460,7 @@ func (ev *Evaluator) stdReplace(evalArgs func() ([]*Value, error)) (*Value, erro
 		return nil, fmt.Errorf("std.replace expects 3 arguments, got %d", len(vals))
 	}
 	if vals[0].Kind != KindString || vals[1].Kind != KindString || vals[2].Kind != KindString {
-		return nil, fmt.Errorf("std.replace: all arguments must be string")
+		return nil, typeErrorf("std.replace: all arguments must be string")
 	}
 	if vals[1].Str == "" {
 		return vals[0], nil
@@ -429,7 +477,7 @@ func (ev *Evaluator) stdSplit(evalArgs func() ([]*Value, error)) (*Value, error)
 		return nil, fmt.Errorf("std.split expects 2 arguments, got %d", len(vals))
 	}
 	if vals[0].Kind != KindString || vals[1].Kind != KindString {
-		return nil, fmt.Errorf("std.split: both arguments must be string")
+		return nil, typeErrorf("std.split: both arguments must be string")
 	}
 	// §5.16.4: rules checked in order — first match wins
 	// 1. delimiter not in input → [input]
@@ -466,7 +514,7 @@ func (ev *Evaluator) stdTrim(evalArgs func() ([]*Value, error)) (*Value, error) 
 		return nil, fmt.Errorf("std.trim expects 1 argument, got %d", len(vals))
 	}
 	if vals[0].Kind != KindString {
-		return nil, fmt.Errorf("std.trim: expected string argument")
+		return nil, typeErrorf("std.trim: expected string argument")
 	}
 	return String(strings.TrimSpace(vals[0].Str)), nil
 }
@@ -479,11 +527,8 @@ func (ev *Evaluator) stdLower(evalArgs func() ([]*Value, error)) (*Value, error)
 	if len(vals) != 1 {
 		return nil, fmt.Errorf("std.lower expects 1 argument, got %d", len(vals))
 	}
-	if vals[0].Kind == KindUndefined {
-		return Undefined(), nil
-	}
 	if vals[0].Kind != KindString {
-		return nil, fmt.Errorf("std.lower: expected string argument")
+		return nil, typeErrorf("std.lower: expected string argument")
 	}
 	return String(strings.ToLower(vals[0].Str)), nil
 }
@@ -496,11 +541,8 @@ func (ev *Evaluator) stdUpper(evalArgs func() ([]*Value, error)) (*Value, error)
 	if len(vals) != 1 {
 		return nil, fmt.Errorf("std.upper expects 1 argument, got %d", len(vals))
 	}
-	if vals[0].Kind == KindUndefined {
-		return Undefined(), nil
-	}
 	if vals[0].Kind != KindString {
-		return nil, fmt.Errorf("std.upper: expected string argument")
+		return nil, typeErrorf("std.upper: expected string argument")
 	}
 	return String(strings.ToUpper(vals[0].Str)), nil
 }

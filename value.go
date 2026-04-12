@@ -237,9 +237,8 @@ type FunctionValue struct {
 
 // FuncParam defines a function parameter.
 type FuncParam struct {
-	Name    string
-	Type    *TypeInfo
-	Default *Value // nil if no default value
+	Name string
+	Type *TypeInfo
 }
 
 // Convenience constructors for creating UZON values.

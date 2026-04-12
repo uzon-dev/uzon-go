@@ -609,16 +609,25 @@ c is not true`)
 
 // --- Type annotation and adoption ---
 
-func TestEvalNoIntFloatCoercion(t *testing.T) {
+// §5: integer literal adopts float type when combined with float operand.
+func TestEvalIntFloatCrossAdoption(t *testing.T) {
 	p := ast.NewParser([]byte(`x is 1 + 1.5`), "test.uzon")
 	doc, err := p.Parse()
 	if err != nil {
 		t.Fatal(err)
 	}
 	ev := NewEvaluator()
-	_, err = ev.EvalDocument(doc)
-	if err == nil {
-		t.Error("expected error for int + float coercion")
+	v, err := ev.EvalDocument(doc)
+	if err != nil {
+		t.Fatal(err)
+	}
+	x := v.Struct.Get("x")
+	if x == nil || x.Kind != KindFloat {
+		t.Fatalf("expected float, got %v", x)
+	}
+	f, _ := x.Float.Float64()
+	if f != 2.5 {
+		t.Errorf("expected 2.5, got %v", f)
 	}
 }
 
