@@ -2,7 +2,7 @@
 
 Go implementation of [UZON](https://uzon.dev), a typed, human-readable data expression format.
 
-Implements [UZON specification v0.6](https://uzon.dev). Requires Go 1.23 or later.
+Implements [UZON specification v0.7](https://uzon.dev). Requires Go 1.23 or later.
 
 ```
 go get github.com/uzon-dev/uzon-go
@@ -45,10 +45,10 @@ v := uzon.NewStruct(
 **Convert to/from JSON:**
 
 ```go
-// UZON → JSON
+// UZON -> JSON
 jsonBytes, _ := json.Marshal(v)
 
-// JSON → UZON Value
+// JSON -> UZON Value
 v, err := uzon.FromJSON(jsonBytes)
 ```
 
@@ -72,7 +72,7 @@ limits is {
 }
 ```
 
-UZON supports structs, lists, tuples, enums, tagged unions, functions, conditionals (`if`/`case`), arithmetic, environment variables (`env.VAR`), file imports (`from "path"`), struct overrides (`with`), extensions (`extends`), and a standard library (`std.*`). See the full [UZON specification](https://uzon.dev) for details.
+UZON supports structs, lists, tuples, enums, tagged unions, functions, conditionals (`if`/`case`/`case type`/`case named`), arithmetic, type checking (`is type`/`is not type`), environment variables (`env.VAR`), file imports (`from "path"`), struct overrides (`with`), extensions (`plus`), and a standard library (`std.*`). See the full [UZON specification](https://uzon.dev) for details.
 
 ---
 
@@ -402,21 +402,21 @@ Returns the UZON text as bytes. Implements `encoding.TextMarshaler`.
 type ValueKind int
 ```
 
-| Constant           | Description                           |
-| ------------------ | ------------------------------------- |
-| `KindNull`         | Intentionally empty value             |
-| `KindUndefined`    | Missing value; resolved with `OrElse` |
-| `KindBool`         | `true` or `false`                     |
-| `KindInt`          | Arbitrary-precision integer           |
-| `KindFloat`        | IEEE 754 float                        |
-| `KindString`       | UTF-8 string                          |
-| `KindStruct`       | Named field collection                |
-| `KindTuple`        | Fixed-length heterogeneous sequence   |
-| `KindList`         | Variable-length homogeneous sequence  |
-| `KindEnum`         | Named variant from a fixed set        |
-| `KindUnion`        | Untagged union                        |
-| `KindTaggedUnion`  | Union with variant labels             |
-| `KindFunction`     | First-class callable                  |
+| Constant          | Description                           |
+| ----------------- | ------------------------------------- |
+| `KindNull`        | Intentionally empty value             |
+| `KindUndefined`   | Missing value; resolved with `OrElse` |
+| `KindBool`        | `true` or `false`                     |
+| `KindInt`         | Arbitrary-precision integer           |
+| `KindFloat`       | IEEE 754 float                        |
+| `KindString`      | UTF-8 string                          |
+| `KindStruct`      | Named field collection                |
+| `KindTuple`       | Fixed-length heterogeneous sequence   |
+| `KindList`        | Variable-length homogeneous sequence  |
+| `KindEnum`        | Named variant from a fixed set        |
+| `KindUnion`       | Untagged union                        |
+| `KindTaggedUnion` | Union with variant labels             |
+| `KindFunction`    | First-class callable                  |
 
 ```go
 func (k ValueKind) String() string // "null", "integer", "float", "string", ...
@@ -428,21 +428,21 @@ The central type. Exactly one typed field is meaningful, determined by `Kind`.
 
 ```go
 type Value struct {
-    Kind       ValueKind
-    Type       *TypeInfo    // optional type annotation or named type
-    Adoptable  bool         // untyped literal that adopts type from context (internal)
-    Bool       bool
-    Int        *big.Int
-    Float      *big.Float
-    FloatIsNaN bool         // true when value is NaN (big.Float cannot represent NaN)
-    Str        string
-    Struct     *StructValue
-    Tuple      *TupleValue
-    List       *ListValue
-    Enum       *EnumValue
-    Union      *UnionValue
+    Kind        ValueKind
+    Type        *TypeInfo    // optional type annotation or named type
+    Adoptable   bool         // untyped literal that adopts type from context (internal)
+    Bool        bool
+    Int         *big.Int
+    Float       *big.Float
+    FloatIsNaN  bool         // true when value is NaN (big.Float cannot represent NaN)
+    Str         string
+    Struct      *StructValue
+    Tuple       *TupleValue
+    List        *ListValue
+    Enum        *EnumValue
+    Union       *UnionValue
     TaggedUnion *TaggedUnionValue
-    Function   *FunctionValue
+    Function    *FunctionValue
 }
 ```
 
