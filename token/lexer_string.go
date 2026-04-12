@@ -195,7 +195,7 @@ func (l *Lexer) scanKeywordEscape(pos Pos) Token {
 
 // scanIdentOrKeyword scans an identifier or keyword, including
 // composite keyword detection for "is not", "is named", "is not named",
-// and "or else".
+// "is type", "is not type", and "or else".
 func (l *Lexer) scanIdentOrKeyword(pos Pos) Token {
 	start := l.pos - l.chSize
 	for isIdentContinue(l.ch) {
@@ -210,7 +210,6 @@ func (l *Lexer) scanIdentOrKeyword(pos Pos) Token {
 	if lit == "or" {
 		return l.resolveOrComposite(pos, lit)
 	}
-
 	if tt, ok := Keywords[lit]; ok {
 		return Token{Type: tt, Literal: lit, Pos: pos}
 	}
@@ -221,7 +220,7 @@ func (l *Lexer) scanIdentOrKeyword(pos Pos) Token {
 // or "not named" to form a composite operator token.
 func (l *Lexer) resolveIsComposite(pos Pos, lit string) Token {
 	saved := l.saveState()
-	l.skipSpacesAndTabs()
+	l.skipWhitespaceAndComments() // crosses newlines per §9
 
 	if !isIdentStart(l.ch) {
 		l.restoreState(saved)
@@ -232,11 +231,15 @@ func (l *Lexer) resolveIsComposite(pos Pos, lit string) Token {
 	if word == "not" {
 		l.advanceN(len(word))
 		saved2 := l.saveState()
-		l.skipSpacesAndTabs()
+		l.skipWhitespaceAndComments() // crosses newlines per §9
 		word2 := l.peekWord()
 		if word2 == "named" {
 			l.advanceN(len(word2))
 			return Token{Type: IsNotNamed, Literal: "is not named", Pos: pos}
+		}
+		if word2 == "type" {
+			l.advanceN(len(word2))
+			return Token{Type: IsNotType, Literal: "is not type", Pos: pos}
 		}
 		l.restoreState(saved2)
 		return Token{Type: IsNot, Literal: "is not", Pos: pos}
@@ -244,6 +247,10 @@ func (l *Lexer) resolveIsComposite(pos Pos, lit string) Token {
 	if word == "named" {
 		l.advanceN(len(word))
 		return Token{Type: IsNamed, Literal: "is named", Pos: pos}
+	}
+	if word == "type" {
+		l.advanceN(len(word))
+		return Token{Type: IsType, Literal: "is type", Pos: pos}
 	}
 
 	l.restoreState(saved)
@@ -254,7 +261,7 @@ func (l *Lexer) resolveIsComposite(pos Pos, lit string) Token {
 // form the "or else" composite operator.
 func (l *Lexer) resolveOrComposite(pos Pos, lit string) Token {
 	saved := l.saveState()
-	l.skipSpacesAndTabs()
+	l.skipWhitespaceAndComments() // crosses newlines per §9
 
 	word := l.peekWord()
 	if word == "else" {

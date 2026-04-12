@@ -19,10 +19,24 @@ func (p *Parser) parseIfExpr() Expr {
 	return &IfExpr{Cond: cond, Then: then, Else: els, Position: pos}
 }
 
-// parseCaseExpr parses "case expr when val then expr ... else expr" (§5.10).
+// parseCaseExpr parses case expressions (§5.10). Three forms:
+//   - "case expr when val then ..."        — value matching
+//   - "case type expr when T then ..."     — type dispatch
+//   - "case named expr when tag then ..."  — variant dispatch
 func (p *Parser) parseCaseExpr() Expr {
 	pos := p.cur.Pos
 	p.expect(token.Case)
+
+	// Detect "case type" or "case named" form.
+	var mode string
+	if p.at(token.TypeKw) {
+		mode = "type"
+		p.advance()
+	} else if p.at(token.Named) {
+		mode = "named"
+		p.advance()
+	}
+
 	scrutinee := p.parseExpression()
 
 	var whens []*WhenClause
@@ -30,11 +44,12 @@ func (p *Parser) parseCaseExpr() Expr {
 		wPos := p.cur.Pos
 		p.advance()
 		wc := &WhenClause{Position: wPos}
-		if p.at(token.Named) {
-			p.advance()
-			wc.IsNamed = true
+		switch mode {
+		case "type":
+			wc.TypeExpr = p.parseTypeExpr()
+		case "named":
 			wc.VariantName = p.parseNameOrKeyword()
-		} else {
+		default:
 			wc.Value = p.parseExpression()
 		}
 		p.expect(token.Then)
@@ -49,7 +64,7 @@ func (p *Parser) parseCaseExpr() Expr {
 	p.expect(token.Else)
 	els := p.parseExpression()
 
-	return &CaseExpr{Scrutinee: scrutinee, Whens: whens, Else: els, Position: pos}
+	return &CaseExpr{Mode: mode, Scrutinee: scrutinee, Whens: whens, Else: els, Position: pos}
 }
 
 // parseStructImport parses 'struct "path"' (§7).
@@ -108,14 +123,28 @@ func (p *Parser) parseFunctionExpr() Expr {
 	p.expect(token.LBrace)
 
 	// Parse body: intermediate bindings then final expression.
+	// §3.8: multiline string concatenation is suppressed in function bodies.
 	var bindings []*Binding
 	var body Expr
 
+	saved := p.noStringConcat
+	p.noStringConcat = true
+
 	for !p.at(token.RBrace) && !p.at(token.EOF) {
-		if p.cur.Type == token.Ident && p.peek.Type == token.Is {
-			p.noStringConcat = true
+		// Detect intermediate bindings: only plain Is, not Are or composite
+		// operators. Per §9: func_binding = name , "is" , expression.
+		isBinding := false
+		if (p.cur.Type == token.Ident || p.cur.Type == token.Env) &&
+			p.peek.Type == token.Is {
+			isBinding = true
+		}
+		if p.cur.Type == token.At && token.IsKeyword(p.peek.Literal) &&
+			p.peek2.Type == token.Is {
+			isBinding = true
+		}
+
+		if isBinding {
 			b := p.parseBinding()
-			p.noStringConcat = false
 			if b != nil {
 				bindings = append(bindings, b)
 			}
@@ -125,6 +154,8 @@ func (p *Parser) parseFunctionExpr() Expr {
 			break
 		}
 	}
+
+	p.noStringConcat = saved
 
 	p.expect(token.RBrace)
 
@@ -178,7 +209,15 @@ func (p *Parser) parseTypeExpr() *TypeExpr {
 	var path []string
 	name := p.parseTypeName()
 	if name == "" {
-		p.errorf(pos, "expected type name, got %v (%q)", p.cur.Type, p.cur.Literal)
+		// §11.2: when "is"/"are" appears where a type name is expected, the
+		// preceding keyword was likely intended as a binding name.
+		if (p.at(token.Is) || p.at(token.Are) || isBindingOperator(p.cur.Type)) &&
+			token.IsKeyword(p.prev.Literal) {
+			p.errorf(pos, "expected type name after %q, got %q; to use %q as a binding name, write @%s",
+				p.prev.Literal, p.cur.Literal, p.prev.Literal, p.prev.Literal)
+		} else {
+			p.errorf(pos, "expected type name, got %v (%q)", p.cur.Type, p.cur.Literal)
+		}
 		return &TypeExpr{Position: pos}
 	}
 	path = append(path, name)

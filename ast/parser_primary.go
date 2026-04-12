@@ -36,11 +36,6 @@ func (p *Parser) parsePrimary() Expr {
 		p.advance()
 		return &UndefinedExpr{Position: pos}
 
-	case token.Self:
-		p.errorf(pos, "'self' is a reserved keyword and cannot be used; use bare identifiers instead (e.g., 'x' instead of 'self.x')")
-		p.advance()
-		return &UndefinedExpr{Position: pos}
-
 	case token.Env:
 		p.advance()
 		return &EnvExpr{Position: pos}
@@ -70,6 +65,18 @@ func (p *Parser) parsePrimary() Expr {
 		name := p.cur.Literal
 		p.advance()
 		return &IdentExpr{Name: name, Position: pos}
+
+	case token.At:
+		// Keyword escape: @keyword as identifier reference (§9).
+		if token.IsKeyword(p.peek.Literal) {
+			name := p.peek.Literal
+			p.advance() // consume @
+			p.advance() // consume keyword
+			return &IdentExpr{Name: name, Position: pos}
+		}
+		p.errorf(pos, "unexpected token %v (%q)", p.cur.Type, p.cur.Literal)
+		p.advance()
+		return &LiteralExpr{Token: token.Token{Type: token.Illegal, Pos: pos}}
 
 	default:
 		p.errorf(pos, "unexpected token %v (%q)", p.cur.Type, p.cur.Literal)

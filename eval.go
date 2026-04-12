@@ -376,8 +376,8 @@ func (ev *Evaluator) evalExprSwitch(expr ast.Expr, scope *Scope) (*Value, error)
 		return ev.evalTo(e, scope)
 	case *ast.WithExpr:
 		return ev.evalWith(e, scope)
-	case *ast.ExtendsExpr:
-		return ev.evalExtends(e, scope)
+	case *ast.PlusExpr:
+		return ev.evalPlus(e, scope)
 	case *ast.FromExpr:
 		return ev.evalFrom(e, scope)
 	case *ast.UnionExpr:
@@ -386,6 +386,8 @@ func (ev *Evaluator) evalExprSwitch(expr ast.Expr, scope *Scope) (*Value, error)
 		return ev.evalNamed(e, scope)
 	case *ast.IsNamedExpr:
 		return ev.evalIsNamed(e, scope)
+	case *ast.IsTypeExpr:
+		return ev.evalIsType(e, scope)
 	case *ast.OfExpr:
 		return ev.evalOf(e, scope)
 	case *ast.StructImportExpr:

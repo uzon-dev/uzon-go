@@ -111,11 +111,11 @@ func TestLexerKeywords(t *testing.T) {
 		"inf": Inf, "nan": NaN, "undefined": Undefined,
 		"is": Is, "are": Are, "from": From, "called": Called,
 		"as": As, "named": Named, "with": With, "union": Union,
-		"extends": Extends, "to": To, "of": Of,
+		"plus": PlusKw, "to": To, "of": Of,
 		"and": And, "or": Or, "not": Not,
 		"if": If, "then": Then, "else": Else,
 		"case": Case, "when": When,
-		"self": Self, "env": Env, "struct": Struct, "in": In,
+		"env": Env, "struct": Struct, "in": In,
 		"function": Function, "returns": Returns, "default": Default,
 		"lazy": Lazy, "type": TypeKw,
 	}

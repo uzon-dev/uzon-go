@@ -249,7 +249,7 @@ func (ev *Evaluator) evalWith(e *ast.WithExpr, scope *Scope) (*Value, error) {
 	return &Value{Kind: KindStruct, Struct: &StructValue{Fields: newFields}, Type: base.Type}, nil
 }
 
-// checkWithTypeCompat validates type compatibility for with/extends overrides (§3.2.1).
+// checkWithTypeCompat validates type compatibility for with/plus overrides (§3.2.1).
 func (ev *Evaluator) checkWithTypeCompat(original, override *Value, fieldName string) error {
 	if override.Kind == KindNull || original.Kind == KindNull {
 		return nil
@@ -267,17 +267,17 @@ func (ev *Evaluator) checkWithTypeCompat(original, override *Value, fieldName st
 	return nil
 }
 
-// evalExtends implements "extends { additions }" (§3.2.2).
-func (ev *Evaluator) evalExtends(e *ast.ExtendsExpr, scope *Scope) (*Value, error) {
+// evalPlus implements "plus { additions }" (§3.2.2).
+func (ev *Evaluator) evalPlus(e *ast.PlusExpr, scope *Scope) (*Value, error) {
 	base, err := ev.evalExpr(e.Base, scope)
 	if err != nil {
 		return nil, err
 	}
 	if base.Kind == KindUndefined {
-		return nil, fmt.Errorf("extends: base is undefined")
+		return nil, fmt.Errorf("plus: base is undefined")
 	}
 	if base.Kind != KindStruct {
-		return nil, fmt.Errorf("extends: base must be a struct, got %s", base.Kind)
+		return nil, fmt.Errorf("plus: base must be a struct, got %s", base.Kind)
 	}
 
 	newFields := make([]Field, len(base.Struct.Fields))
@@ -293,7 +293,7 @@ func (ev *Evaluator) evalExtends(e *ast.ExtendsExpr, scope *Scope) (*Value, erro
 		for i, f := range newFields {
 			if f.Name == ob.Name {
 				if err := ev.checkWithTypeCompat(f.Value, v, ob.Name); err != nil {
-					return nil, fmt.Errorf("extends: %w", err)
+					return nil, fmt.Errorf("plus: %w", err)
 				}
 				if f.Value.Type != nil && f.Value.Type.BaseType != "" && (v.Type == nil || v.Type.Name == "__ident__") {
 					v.Type = f.Value.Type
@@ -310,7 +310,7 @@ func (ev *Evaluator) evalExtends(e *ast.ExtendsExpr, scope *Scope) (*Value, erro
 	}
 
 	if !hasNew {
-		return nil, fmt.Errorf("extends: must add at least one new field")
+		return nil, fmt.Errorf("plus: must add at least one new field")
 	}
 
 	return &Value{Kind: KindStruct, Struct: &StructValue{Fields: newFields}}, nil
@@ -321,6 +321,14 @@ func (ev *Evaluator) evalExtends(e *ast.ExtendsExpr, scope *Scope) (*Value, erro
 func (ev *Evaluator) evalFrom(e *ast.FromExpr, scope *Scope) (*Value, error) {
 	if len(e.Variants) < 2 {
 		return nil, fmt.Errorf("enum must have at least 2 variants, got %d", len(e.Variants))
+	}
+	// §3.5/§9: duplicate variant names are a type error.
+	seen := make(map[string]bool, len(e.Variants))
+	for _, v := range e.Variants {
+		if seen[v] {
+			return nil, fmt.Errorf("duplicate variant %q in enum", v)
+		}
+		seen[v] = true
 	}
 	val, err := ev.evalExpr(e.Value, scope)
 	if err != nil {
@@ -341,8 +349,16 @@ func (ev *Evaluator) evalUnion(e *ast.UnionExpr, scope *Scope) (*Value, error) {
 		return nil, err
 	}
 	var memberTypes []*TypeInfo
+	seen := make(map[string]bool, len(e.MemberTypes))
 	for _, t := range e.MemberTypes {
-		memberTypes = append(memberTypes, ev.resolveTypeExpr(t))
+		ti := ev.resolveTypeExpr(t)
+		if ti != nil && ti.BaseType != "" {
+			if seen[ti.BaseType] {
+				return nil, fmt.Errorf("duplicate type %q in union", ti.BaseType)
+			}
+			seen[ti.BaseType] = true
+		}
+		memberTypes = append(memberTypes, ti)
 	}
 	return &Value{Kind: KindUnion, Union: &UnionValue{Inner: val, MemberTypes: memberTypes}}, nil
 }
@@ -350,6 +366,16 @@ func (ev *Evaluator) evalUnion(e *ast.UnionExpr, scope *Scope) (*Value, error) {
 func (ev *Evaluator) evalNamed(e *ast.NamedExpr, scope *Scope) (*Value, error) {
 	if len(e.Variants) == 1 {
 		return nil, fmt.Errorf("tagged union must have at least 2 variants, got 1")
+	}
+	// Duplicate variant names are a type error.
+	if len(e.Variants) >= 2 {
+		seen := make(map[string]bool, len(e.Variants))
+		for _, v := range e.Variants {
+			if seen[v.Name] {
+				return nil, fmt.Errorf("duplicate variant %q in tagged union", v.Name)
+			}
+			seen[v.Name] = true
+		}
 	}
 	val, err := ev.evalExpr(e.Value, scope)
 	if err != nil {

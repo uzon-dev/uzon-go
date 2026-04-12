@@ -326,19 +326,32 @@ func (ev *Evaluator) evalArithmetic(op token.Type, left, right *Value) (*Value, 
 	if left.Kind == KindUndefined || right.Kind == KindUndefined {
 		return nil, fmt.Errorf("arithmetic on undefined")
 	}
+	// When both operands are adoptable (literals), the result remains
+	// adoptable so it can be narrowed to a typed context (e.g., i32 parameter).
+	bothAdoptable := left.Adoptable && right.Adoptable
 	if left.Kind == KindInt && right.Kind == KindInt {
 		ti, err := reconcileNumericTypes(left, right)
 		if err != nil {
 			return nil, fmt.Errorf("arithmetic: %w", err)
 		}
-		return ev.intArith(op, left.Int, right.Int, ti)
+		result, err := ev.intArith(op, left.Int, right.Int, ti)
+		if err != nil {
+			return nil, err
+		}
+		result.Adoptable = bothAdoptable
+		return result, nil
 	}
 	if left.Kind == KindFloat && right.Kind == KindFloat {
 		ti, err := reconcileNumericTypes(left, right)
 		if err != nil {
 			return nil, fmt.Errorf("arithmetic: %w", err)
 		}
-		return ev.floatArith(op, left, right, ti)
+		result, err := ev.floatArith(op, left, right, ti)
+		if err != nil {
+			return nil, err
+		}
+		result.Adoptable = bothAdoptable
+		return result, nil
 	}
 	return nil, fmt.Errorf("arithmetic requires same numeric type, got %s and %s", left.Kind, right.Kind)
 }
@@ -585,6 +598,7 @@ func (ev *Evaluator) evalIf(e *ast.IfExpr, scope *Scope) (*Value, error) {
 }
 
 // evalCase implements pattern matching (§5.10).
+// Three forms: value matching (Mode=""), type dispatch (Mode="type"), variant dispatch (Mode="named").
 // All branches are speculatively evaluated for type consistency.
 func (ev *Evaluator) evalCase(e *ast.CaseExpr, scope *Scope) (*Value, error) {
 	scrutinee, err := ev.evalExpr(e.Scrutinee, scope)
@@ -595,21 +609,39 @@ func (ev *Evaluator) evalCase(e *ast.CaseExpr, scope *Scope) (*Value, error) {
 		return nil, fmt.Errorf("case scrutinee is undefined")
 	}
 
+	// §5.10: validate scrutinee type for dispatch modes
+	switch e.Mode {
+	case "type":
+		if scrutinee.Kind != KindUnion {
+			return nil, fmt.Errorf("case type: scrutinee must be an untagged union, got %s", scrutinee.Kind)
+		}
+	case "named":
+		if scrutinee.Kind != KindTaggedUnion {
+			return nil, fmt.Errorf("case named: scrutinee must be a tagged union, got %s", scrutinee.Kind)
+		}
+	}
+
 	var result *Value
 	var branchTypes []ValueKind
 
 	for _, w := range e.Whens {
-		if !w.IsNamed {
+		matched := false
+
+		switch e.Mode {
+		case "type":
+			// Type dispatch: match inner value's type against when type
+			ti := ev.resolveTypeExpr(w.TypeExpr)
+			matched = ev.valueMatchesType(scrutinee.Union.Inner, ti)
+		case "named":
+			// Variant dispatch: match tagged union's tag
+			if scrutinee.TaggedUnion.Tag == w.VariantName {
+				matched = true
+			}
+		default:
+			// Value matching
 			if _, ok := w.Value.(*ast.UndefinedExpr); ok {
 				return nil, fmt.Errorf("'when undefined' is not allowed in case expressions")
 			}
-		}
-		matched := false
-		if w.IsNamed {
-			if scrutinee.Kind == KindTaggedUnion && scrutinee.TaggedUnion.Tag == w.VariantName {
-				matched = true
-			}
-		} else {
 			wVal, err := ev.evalExpr(w.Value, scope)
 			if err != nil {
 				return nil, err
@@ -663,4 +695,68 @@ func (ev *Evaluator) evalCase(e *ast.CaseExpr, scope *Scope) (*Value, error) {
 		return nil, elseErr
 	}
 	return elseVal, nil
+}
+
+// evalIsType implements "expr is type T" and "expr is not type T" (§5.2).
+func (ev *Evaluator) evalIsType(e *ast.IsTypeExpr, scope *Scope) (*Value, error) {
+	val, err := ev.evalExpr(e.Value, scope)
+	if err != nil {
+		return nil, err
+	}
+	if val.Kind == KindUndefined {
+		return nil, fmt.Errorf("'is type' on undefined")
+	}
+	ti := ev.resolveTypeExpr(e.TypeExpr)
+	matched := ev.valueMatchesType(val, ti)
+	if e.Negated {
+		return Bool(!matched), nil
+	}
+	return Bool(matched), nil
+}
+
+// valueMatchesType checks if a value matches a type expression (for "is type" / "case type").
+// For union values, the inner value is checked against the type.
+func (ev *Evaluator) valueMatchesType(val *Value, ti *TypeInfo) bool {
+	if val == nil || ti == nil {
+		return false
+	}
+	// Unwrap union: check the inner value's type
+	if val.Kind == KindUnion {
+		return ev.valueMatchesType(val.Union.Inner, ti)
+	}
+	switch val.Kind {
+	case KindNull:
+		return ti.BaseType == "null" || ti.Name == "null"
+	case KindBool:
+		return ti.BaseType == "bool" || ti.Name == "bool"
+	case KindInt:
+		if ti.BaseType != "" {
+			return isIntegerType(ti.BaseType)
+		}
+		return ti.Name == "i64" || ti.Name == "integer"
+	case KindFloat:
+		if ti.BaseType != "" {
+			return isFloatType(ti.BaseType)
+		}
+		return ti.Name == "f64" || ti.Name == "float"
+	case KindString:
+		return ti.BaseType == "string" || ti.Name == "string"
+	case KindStruct:
+		if val.Type != nil && val.Type.Name != "" {
+			return val.Type.Name == ti.Name
+		}
+		return ti.Name == "struct"
+	case KindList:
+		return ti.BaseType == "list" || ti.Name == "list"
+	case KindTuple:
+		return ti.BaseType == "tuple" || ti.Name == "tuple"
+	case KindEnum:
+		if val.Type != nil && val.Type.Name != "" {
+			return val.Type.Name == ti.Name
+		}
+		return false
+	case KindFunction:
+		return ti.Name == "function"
+	}
+	return false
 }

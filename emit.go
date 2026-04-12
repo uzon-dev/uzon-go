@@ -269,9 +269,9 @@ func isKeyword(name string) bool {
 	keywords := map[string]bool{
 		"true": true, "false": true, "null": true, "inf": true, "nan": true, "undefined": true,
 		"is": true, "are": true, "from": true, "called": true, "as": true, "named": true,
-		"with": true, "union": true, "extends": true, "to": true, "of": true,
+		"with": true, "union": true, "plus": true, "to": true, "of": true,
 		"and": true, "or": true, "not": true, "if": true, "then": true, "else": true,
-		"case": true, "when": true, "self": true, "env": true, "struct": true, "in": true,
+		"case": true, "when": true, "env": true, "struct": true, "in": true,
 		"function": true, "returns": true, "default": true, "lazy": true, "type": true,
 	}
 	return keywords[name]

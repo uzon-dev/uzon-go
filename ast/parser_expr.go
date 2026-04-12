@@ -10,7 +10,7 @@ import (
 // --- Expression Precedence (lowest to highest) ---
 // or else → or → and → not → is/is not/is named → in → < <= > >= →
 // ++ → + - → * / % ** → unary - → ^ → from/named → as/to →
-// with/extends → call/member → primary
+// with/plus → call/member → primary
 
 // parseExpression parses the full expression at "or else" level.
 func (p *Parser) parseExpression() Expr {
@@ -60,7 +60,7 @@ func (p *Parser) parseNot() Expr {
 	return p.parseEquality()
 }
 
-// parseEquality handles is, is not, is named, is not named.
+// parseEquality handles is, is not, is named, is not named, is type, is not type.
 func (p *Parser) parseEquality() Expr {
 	left := p.parseMembership()
 
@@ -75,6 +75,16 @@ func (p *Parser) parseEquality() Expr {
 		p.advance()
 		variant := p.parseNameOrKeyword()
 		return &IsNamedExpr{Value: left, Variant: variant, Negated: true, Position: pos}
+	case token.IsType:
+		pos := p.cur.Pos
+		p.advance()
+		te := p.parseTypeExpr()
+		return &IsTypeExpr{Value: left, TypeExpr: te, Position: pos}
+	case token.IsNotType:
+		pos := p.cur.Pos
+		p.advance()
+		te := p.parseTypeExpr()
+		return &IsTypeExpr{Value: left, TypeExpr: te, Negated: true, Position: pos}
 	case token.IsNot:
 		pos := p.cur.Pos
 		p.advance()
@@ -229,7 +239,6 @@ func (p *Parser) parseFromClause(value Expr) Expr {
 		types = append(types, p.parseTypeExpr())
 		for p.match(token.Comma) {
 			if p.isBindingStart() || p.at(token.RBrace) || p.at(token.RParen) || p.at(token.RBrack) || p.at(token.EOF) {
-				p.errorf(p.cur.Pos, "trailing comma not permitted in union member list")
 				break
 			}
 			types = append(types, p.parseTypeExpr())
@@ -242,7 +251,6 @@ func (p *Parser) parseFromClause(value Expr) Expr {
 	variants = append(variants, p.parseNameOrKeyword())
 	for p.match(token.Comma) {
 		if p.isBindingStart() || p.at(token.RBrace) || p.at(token.RParen) || p.at(token.RBrack) || p.at(token.EOF) || p.at(token.Called) {
-			p.errorf(p.cur.Pos, "trailing comma not permitted in enum variant list")
 			break
 		}
 		variants = append(variants, p.parseNameOrKeyword())
@@ -270,7 +278,6 @@ func (p *Parser) parseNamedClause(value Expr) Expr {
 				break
 			}
 			if p.isBindingStart() || p.at(token.RBrace) || p.at(token.RParen) || p.at(token.RBrack) || p.at(token.EOF) || p.at(token.Called) {
-				p.errorf(p.cur.Pos, "trailing comma not permitted in tagged union variant list")
 				break
 			}
 		}
@@ -298,7 +305,7 @@ func (p *Parser) parseTypeAnnotation() Expr {
 	return left
 }
 
-// parseStructOverride handles "with { ... }" and "extends { ... }" (§3.2.1, §3.2.2).
+// parseStructOverride handles "with { ... }" and "plus { ... }" (§3.2.1, §3.2.2).
 func (p *Parser) parseStructOverride() Expr {
 	left := p.parseConversion()
 	if p.at(token.With) {
@@ -307,11 +314,11 @@ func (p *Parser) parseStructOverride() Expr {
 		override := p.parseStructLiteral()
 		return &WithExpr{Base: left, Override: override, Position: pos}
 	}
-	if p.at(token.Extends) {
+	if p.at(token.PlusKw) {
 		pos := p.cur.Pos
 		p.advance()
 		ext := p.parseStructLiteral()
-		return &ExtendsExpr{Base: left, Extension: ext, Position: pos}
+		return &PlusExpr{Base: left, Extension: ext, Position: pos}
 	}
 	return left
 }
@@ -337,7 +344,7 @@ func (p *Parser) parseCallOrAccess() Expr {
 			p.advance()
 			member := p.parseMemberName()
 			left = &MemberExpr{Object: left, Member: member, Position: pos}
-		} else if p.at(token.LParen) {
+		} else if p.at(token.LParen) && p.cur.Pos.Line == p.prev.Pos.Line {
 			pos := p.cur.Pos
 			p.advance()
 			var args []Expr

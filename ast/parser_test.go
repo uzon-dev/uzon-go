@@ -241,16 +241,16 @@ dev is base with { debug is true }`)
 	}
 }
 
-func TestParseExtendsExpr(t *testing.T) {
+func TestParsePlusExpr(t *testing.T) {
 	doc := mustParse(t, `
 base is { host is "localhost" }
-secure is base extends { tls is true }`)
-	ee, ok := doc.Bindings[1].Value.(*ExtendsExpr)
+secure is base plus { tls is true }`)
+	pe, ok := doc.Bindings[1].Value.(*PlusExpr)
 	if !ok {
-		t.Fatalf("expected ExtendsExpr, got %T", doc.Bindings[0].Value)
+		t.Fatalf("expected PlusExpr, got %T", doc.Bindings[1].Value)
 	}
-	if len(ee.Extension.Fields) != 1 {
-		t.Errorf("expected 1 extension field, got %d", len(ee.Extension.Fields))
+	if len(pe.Extension.Fields) != 1 {
+		t.Errorf("expected 1 extension field, got %d", len(pe.Extension.Fields))
 	}
 }
 
