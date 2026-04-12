@@ -22,14 +22,24 @@ func (ev *Evaluator) evalTo(e *ast.ToExpr, scope *Scope) (*Value, error) {
 
 	ti := ev.resolveTypeExpr(e.TypeExpr)
 
-	// §5.11: "to bool" only allows identity (bool to bool)
-	if ti != nil && ti.BaseType == "bool" && val.Kind != KindBool {
-		return nil, fmt.Errorf("cannot convert %s to bool", val.Kind)
+	// §5.11.0/§D.2: undefined propagates through "to" regardless of target type.
+	// §5.13: env refs are statically typed as string — validate that the target
+	// type is reachable from string even when the env var is missing.
+	if val.Kind == KindUndefined || isUnresolvedIdent(val) {
+		if isEnvRef(e.Value) && ti != nil {
+			switch ti.BaseType {
+			case "bool":
+				return nil, typeErrorf("cannot convert string to bool")
+			case "null":
+				return nil, typeErrorf("cannot convert string to null")
+			}
+		}
+		return Undefined(), nil
 	}
 
-	// §5.11: undefined propagates through "to"
-	if val.Kind == KindUndefined || isUnresolvedIdent(val) {
-		return Undefined(), nil
+	// §5.11: "to bool" only allows identity (bool to bool) — type error for all others.
+	if ti != nil && ti.BaseType == "bool" && val.Kind != KindBool {
+		return nil, typeErrorf("cannot convert %s to bool", val.Kind)
 	}
 
 	// §5.11.0/§D.1: "to null" is identity — only null can convert to null
@@ -37,7 +47,7 @@ func (ev *Evaluator) evalTo(e *ast.ToExpr, scope *Scope) (*Value, error) {
 		if val.Kind == KindNull {
 			return val, nil
 		}
-		return nil, fmt.Errorf("cannot convert %s to null", val.Kind)
+		return nil, typeErrorf("cannot convert %s to null", val.Kind)
 	}
 
 	return ev.convertValue(val, ti, e.TypeExpr.Path, scope)
@@ -70,7 +80,7 @@ func (ev *Evaluator) convertValue(val *Value, target *TypeInfo, typePath []strin
 			}
 		}
 	}
-	return nil, fmt.Errorf("cannot convert %s to %s", val.Kind, target.BaseType)
+	return nil, typeErrorf("cannot convert %s to %s", val.Kind, target.BaseType)
 }
 
 // resolveEnumFromPath walks qualified type paths (e.g. ["shared", "RGB"])
@@ -134,7 +144,7 @@ func (ev *Evaluator) convertToString(val *Value) (*Value, error) {
 	case KindUnion:
 		return ev.convertToString(val.Union.Inner)
 	default:
-		return nil, fmt.Errorf("cannot convert %s to string", val.Kind)
+		return nil, typeErrorf("cannot convert %s to string", val.Kind)
 	}
 }
 
@@ -173,22 +183,13 @@ func (ev *Evaluator) convertToInt(val *Value, target *TypeInfo) (*Value, error) 
 	case KindString:
 		n = new(big.Int)
 		s := strings.ReplaceAll(val.Str, "_", "")
-		var ok bool
-		switch {
-		case strings.HasPrefix(s, "0x") || strings.HasPrefix(s, "0X"):
-			_, ok = n.SetString(s[2:], 16)
-		case strings.HasPrefix(s, "0o") || strings.HasPrefix(s, "0O"):
-			_, ok = n.SetString(s[2:], 8)
-		case strings.HasPrefix(s, "0b") || strings.HasPrefix(s, "0B"):
-			_, ok = n.SetString(s[2:], 2)
-		default:
-			_, ok = n.SetString(s, 10)
-		}
+		// Use base 0 to auto-detect prefix (0x, 0o, 0b) including negative prefixes like "-0xff"
+		_, ok := n.SetString(s, 0)
 		if !ok {
 			return nil, fmt.Errorf("cannot parse %q as integer", val.Str)
 		}
 	default:
-		return nil, fmt.Errorf("cannot convert %s to %s", val.Kind, target.BaseType)
+		return nil, typeErrorf("cannot convert %s to %s", val.Kind, target.BaseType)
 	}
 	if target.BitSize > 0 && target.BitSize <= 64 {
 		if err := checkIntRange(n, target.BitSize, target.Signed); err != nil {
@@ -244,7 +245,17 @@ func (ev *Evaluator) convertToFloat(val *Value, target *TypeInfo) (*Value, error
 			}
 		}
 	default:
-		return nil, fmt.Errorf("cannot convert %s to %s", val.Kind, target.BaseType)
+		return nil, typeErrorf("cannot convert %s to %s", val.Kind, target.BaseType)
 	}
 	return &Value{Kind: KindFloat, Float: f, Type: target}, nil
+}
+
+// isEnvRef reports whether expr is an env member access (env.NAME).
+func isEnvRef(expr ast.Expr) bool {
+	m, ok := expr.(*ast.MemberExpr)
+	if !ok {
+		return false
+	}
+	_, isEnv := m.Object.(*ast.EnvExpr)
+	return isEnv
 }

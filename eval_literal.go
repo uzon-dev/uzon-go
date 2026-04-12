@@ -127,10 +127,16 @@ func (ev *Evaluator) accessMember(obj *Value, member string) (*Value, error) {
 		return ev.accessIndex(obj.List.Elements, member)
 	case KindTuple:
 		return ev.accessIndex(obj.Tuple.Elements, member)
+	case KindTaggedUnion:
+		// §3.7.1: member access is transparent — access inner value's members.
+		return ev.accessMember(obj.TaggedUnion.Inner, member)
+	case KindUnion:
+		// Untagged union: transparent member access on inner value.
+		return ev.accessMember(obj.Union.Inner, member)
 	case KindUndefined:
 		return Undefined(), nil
 	case KindNull:
-		return nil, fmt.Errorf("type error: member access on null")
+		return nil, typeErrorf("member access on null")
 	default:
 		return Undefined(), nil
 	}
