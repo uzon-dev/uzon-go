@@ -206,7 +206,7 @@ func walkExpr(expr ast.Expr, visit func(ast.Expr)) {
 				walkExpr(b.Value, visit)
 			}
 		}
-	case *ast.ExtendsExpr:
+	case *ast.PlusExpr:
 		walkExpr(e.Base, visit)
 		if e.Extension != nil {
 			for _, b := range e.Extension.Fields {
@@ -220,6 +220,8 @@ func walkExpr(expr ast.Expr, visit func(ast.Expr)) {
 	case *ast.NamedExpr:
 		walkExpr(e.Value, visit)
 	case *ast.IsNamedExpr:
+		walkExpr(e.Value, visit)
+	case *ast.IsTypeExpr:
 		walkExpr(e.Value, visit)
 	case *ast.OfExpr:
 		walkExpr(e.Source, visit)

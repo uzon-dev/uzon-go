@@ -11,10 +11,12 @@ import (
 
 // Parser parses UZON source tokens into an AST.
 type Parser struct {
-	lex  *token.Lexer
-	cur  token.Token
-	peek token.Token
-	file string
+	lex   *token.Lexer
+	prev  token.Token // previously consumed token (for same-line checks)
+	cur   token.Token
+	peek  token.Token
+	peek2 token.Token // 3-token lookahead (for @keyword is/are detection)
+	file  string
 
 	errors []error
 
@@ -29,7 +31,8 @@ func NewParser(src []byte, file string) *Parser {
 	lex := token.NewLexer(src, file)
 	p := &Parser{lex: lex, file: file}
 	p.advance() // fill cur
-	p.advance() // fill peek (cur now has first token)
+	p.advance() // fill peek
+	p.advance() // fill peek2 (cur now has first token)
 	return p
 }
 
@@ -49,8 +52,10 @@ func (p *Parser) Errors() []error {
 }
 
 func (p *Parser) advance() {
+	p.prev = p.cur
 	p.cur = p.peek
-	p.peek = p.lex.Next()
+	p.peek = p.peek2
+	p.peek2 = p.lex.Next()
 }
 
 func (p *Parser) expect(t token.Type) token.Token {
@@ -100,7 +105,13 @@ func (p *Parser) parseBinding() *Binding {
 	pos := p.cur.Pos
 	name := p.parseName()
 	if name == "" {
-		p.errorf(pos, "expected binding name, got %v (%q)", p.cur.Type, p.cur.Literal)
+		// §11.2: suggest @keyword escape when a keyword appears at binding position.
+		if token.IsKeyword(p.cur.Literal) && p.cur.Type != token.EOF && isBindingOperator(p.peek.Type) {
+			p.errorf(pos, "%q is a keyword; to use it as a binding name, write @%s",
+				p.cur.Literal, p.cur.Literal)
+		} else {
+			p.errorf(pos, "expected binding name, got %v (%q)", p.cur.Type, p.cur.Literal)
+		}
 		p.advance()
 		return nil
 	}
@@ -138,6 +149,20 @@ func (p *Parser) parseBinding() *Binding {
 		inner := p.continueExprFromTypeDecl(left)
 		notExpr := Expr(&UnaryExpr{Op: token.Not, Operand: inner, Position: notPos})
 		b.Value = p.continueFromAndLevel(notExpr)
+	} else if p.at(token.IsType) {
+		// §9 binding decomposition: "x is type ..." → "type" becomes an identifier
+		typePos := p.cur.Pos
+		p.advance()
+		left := Expr(&IdentExpr{Name: "type", Position: typePos})
+		b.Value = p.continueExprFromTypeDecl(left)
+	} else if p.at(token.IsNotType) {
+		// §9 binding decomposition: "x is not type ..." → not(<ident "type" ...>)
+		notPos := p.cur.Pos
+		p.advance()
+		left := Expr(&IdentExpr{Name: "type", Position: notPos})
+		inner := p.continueExprFromTypeDecl(left)
+		notExpr := Expr(&UnaryExpr{Op: token.Not, Operand: inner, Position: notPos})
+		b.Value = p.continueFromAndLevel(notExpr)
 	} else if p.at(token.Are) {
 		p.advance()
 		b.Value = p.parseAreExpr()
@@ -156,7 +181,8 @@ func (p *Parser) parseBinding() *Binding {
 }
 
 // parseName reads an identifier name.
-// Also allows the contextual keyword "env" as a binding name.
+// Also allows the contextual keyword "env" and keyword escapes (@keyword)
+// as binding names per §9: name = identifier | keyword_escape.
 func (p *Parser) parseName() string {
 	if p.at(token.Ident) {
 		name := p.cur.Literal
@@ -167,6 +193,13 @@ func (p *Parser) parseName() string {
 	if p.at(token.Env) {
 		name := p.cur.Literal
 		p.advance()
+		return name
+	}
+	// Keyword escape: @keyword (§9 name = identifier | keyword_escape).
+	if p.at(token.At) && token.IsKeyword(p.peek.Literal) {
+		name := p.peek.Literal
+		p.advance() // consume @
+		p.advance() // consume keyword
 		return name
 	}
 	return ""
@@ -195,7 +228,10 @@ func (p *Parser) parseAreExpr() Expr {
 	elems = append(elems, p.parseExpression())
 
 	for p.match(token.Comma) {
-		if p.isBindingStart() || p.at(token.RBrace) || p.at(token.EOF) {
+		if p.isBindingStart() {
+			break // binding separator, not trailing comma
+		}
+		if p.at(token.RBrace) || p.at(token.EOF) {
 			p.errorf(p.cur.Pos, "trailing comma not permitted in are binding")
 			break
 		}
@@ -212,13 +248,26 @@ func (p *Parser) parseAreExpr() Expr {
 	return &AreExpr{Elements: elems, TypeAnnotation: typeAnn, Position: pos}
 }
 
-// isBindingStart checks if the current position looks like a new binding.
-func (p *Parser) isBindingStart() bool {
-	if p.cur.Type == token.Ident && (p.peek.Type == token.Is || p.peek.Type == token.Are) {
+// isBindingOperator reports whether t is a binding operator token
+// (any token that can follow a name in a binding).
+func isBindingOperator(t token.Type) bool {
+	switch t {
+	case token.Is, token.Are, token.IsNot, token.IsNamed, token.IsNotNamed, token.IsType, token.IsNotType:
 		return true
 	}
-	// Contextual keywords as binding names.
-	if p.cur.Type == token.Env && (p.peek.Type == token.Is || p.peek.Type == token.Are) {
+	return false
+}
+
+// isBindingStart checks if the current position looks like a new binding.
+func (p *Parser) isBindingStart() bool {
+	if p.cur.Type == token.Ident && isBindingOperator(p.peek.Type) {
+		return true
+	}
+	if p.cur.Type == token.Env && isBindingOperator(p.peek.Type) {
+		return true
+	}
+	// Keyword escape: @keyword is/are (§9), requires 3-token lookahead.
+	if p.cur.Type == token.At && token.IsKeyword(p.peek.Literal) && isBindingOperator(p.peek2.Type) {
 		return true
 	}
 	return false

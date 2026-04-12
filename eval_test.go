@@ -273,10 +273,10 @@ dev is base with { port is 9090 }`)
 	}
 }
 
-func TestEvalExtends(t *testing.T) {
+func TestEvalPlus(t *testing.T) {
 	v := evalSrc(t, `
 base is { host is "localhost", port is 8080 }
-secure is base extends { tls is true }`)
+secure is base plus { tls is true }`)
 	secure := getField(t, v, "secure")
 	tls := secure.Struct.Get("tls")
 	if tls.Kind != KindBool || !tls.Bool {

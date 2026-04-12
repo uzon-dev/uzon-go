@@ -342,7 +342,7 @@ func isValueToken(t Type) bool {
 	switch t {
 	case IntLit, FloatLit, StringLit, Ident,
 		True, False, Null, Inf, NaN, Undefined,
-		Self, Env,
+		Env,
 		RParen, RBrack, RBrace:
 		return true
 	}

@@ -6,7 +6,7 @@
 // Every syntactic construct in a UZON document maps to a Node in this
 // package. The top-level Document contains Bindings; each Binding associates
 // a name with an Expr. Expression types cover literals, identifiers,
-// operators, control flow (if/case), type operations (as/to/with/extends),
+// operators, control flow (if/case), type operations (as/to/with/plus),
 // compound values (struct/tuple/list/enum/union), and functions (§1–§7).
 package ast
 
@@ -144,8 +144,12 @@ func (e *IfExpr) Pos() token.Pos { return e.Position }
 func (e *IfExpr) nodeTag()       {}
 func (e *IfExpr) exprTag()       {}
 
-// CaseExpr represents pattern matching: "case expr when val then expr ... else expr" (§5.10).
+// CaseExpr represents pattern matching (§5.10). Three forms:
+//   - "case expr when val then ..."        — value matching (Mode = "")
+//   - "case type expr when T then ..."     — type dispatch (Mode = "type")
+//   - "case named expr when tag then ..."  — variant dispatch (Mode = "named")
 type CaseExpr struct {
+	Mode      string // "", "type", or "named"
 	Scrutinee Expr
 	Whens     []*WhenClause
 	Else      Expr
@@ -156,12 +160,14 @@ func (e *CaseExpr) Pos() token.Pos { return e.Position }
 func (e *CaseExpr) nodeTag()       {}
 func (e *CaseExpr) exprTag()       {}
 
-// WhenClause represents a single "when value then expr" or
-// "when named variant then expr" arm in a case expression (§5.10).
+// WhenClause represents a single "when" arm in a case expression (§5.10).
+// For value matching: Value is set.
+// For type dispatch (case type): TypeExpr is set.
+// For variant dispatch (case named): VariantName is set.
 type WhenClause struct {
-	Value       Expr   // for value matching (mutually exclusive with VariantName)
-	VariantName string // for "when named variant" in tagged unions
-	IsNamed     bool   // true if using "when named" form
+	Value       Expr      // for value matching
+	TypeExpr    *TypeExpr // for "case type" — type to match
+	VariantName string    // for "case named" — variant tag to match
 	Then        Expr
 	Position    token.Pos
 }
@@ -232,17 +238,17 @@ func (e *WithExpr) Pos() token.Pos { return e.Position }
 func (e *WithExpr) nodeTag()       {}
 func (e *WithExpr) exprTag()       {}
 
-// ExtendsExpr represents struct extension: "expr extends { additions }" (§3.2.2).
+// PlusExpr represents struct extension: "expr plus { additions }" (§3.2.2).
 // Copies a struct, adds new fields, and optionally overrides existing ones.
-type ExtendsExpr struct {
+type PlusExpr struct {
 	Base      Expr
 	Extension *StructExpr
 	Position  token.Pos
 }
 
-func (e *ExtendsExpr) Pos() token.Pos { return e.Position }
-func (e *ExtendsExpr) nodeTag()       {}
-func (e *ExtendsExpr) exprTag()       {}
+func (e *PlusExpr) Pos() token.Pos { return e.Position }
+func (e *PlusExpr) nodeTag()       {}
+func (e *PlusExpr) exprTag()       {}
 
 // FromExpr represents enum definition: "value from variant, variant, ..." (§3.5).
 type FromExpr struct {
@@ -308,6 +314,19 @@ type IsNamedExpr struct {
 func (e *IsNamedExpr) Pos() token.Pos { return e.Position }
 func (e *IsNamedExpr) nodeTag()       {}
 func (e *IsNamedExpr) exprTag()       {}
+
+// IsTypeExpr represents runtime type checking:
+// "expr is type T" or "expr is not type T" (§5.2).
+type IsTypeExpr struct {
+	Value    Expr
+	TypeExpr *TypeExpr
+	Negated  bool // true for "is not type"
+	Position token.Pos
+}
+
+func (e *IsTypeExpr) Pos() token.Pos { return e.Position }
+func (e *IsTypeExpr) nodeTag()       {}
+func (e *IsTypeExpr) exprTag()       {}
 
 // StructImportExpr represents file import: 'struct "path"' (§7).
 type StructImportExpr struct {

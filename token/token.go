@@ -44,8 +44,8 @@ const (
 	As      // as      (type annotation/assertion)
 	Named   // named   (tagged union variant label)
 	With    // with    (struct override)
-	Union   // union   (union type marker)
-	Extends // extends (struct extension)
+	Union  // union   (union type marker)
+	PlusKw // plus    (struct extension)
 
 	// Keywords — conversion/extraction (§5.5, §5.8).
 	To // to (type conversion)
@@ -73,17 +73,20 @@ const (
 	Returns  // returns
 	Default  // default
 
+	// Keywords — type check (§5.2).
+	TypeKw // type (runtime type check)
+
 	// Keywords — reserved for future use.
-	Self   // self
-	Lazy   // lazy
-	TypeKw // type
+	Lazy // lazy
 
 	// Composite operators — the lexer emits these as single tokens
 	// to simplify parsing of multi-word keyword sequences.
 	IsNot      // is not
 	IsNamed    // is named
 	IsNotNamed // is not named
-	OrElse     // or else
+	IsType    // is type
+	IsNotType // is not type
+	OrElse    // or else
 
 	// Arithmetic operators (§5.1).
 	Plus     // +
@@ -120,14 +123,16 @@ var typeNames = map[Type]string{
 	Ident: "IDENT",
 	True: "true", False: "false", Null: "null", Inf: "inf", NaN: "nan", Undefined: "undefined",
 	Is: "is", Are: "are",
-	From: "from", Called: "called", As: "as", Named: "named", With: "with", Union: "union", Extends: "extends",
+	From: "from", Called: "called", As: "as", Named: "named", With: "with", Union: "union", PlusKw: "plus",
 	To: "to", Of: "of",
 	And: "and", Or: "or", Not: "not",
 	If: "if", Then: "then", Else: "else", Case: "case", When: "when",
 	Env: "env", Struct: "struct", In: "in",
 	Function: "function", Returns: "returns", Default: "default",
-	Self: "self", Lazy: "lazy", TypeKw: "type",
-	IsNot: "is not", IsNamed: "is named", IsNotNamed: "is not named", OrElse: "or else",
+	TypeKw: "type", Lazy: "lazy",
+	IsNot: "is not", IsNamed: "is named", IsNotNamed: "is not named",
+	IsType: "is type", IsNotType: "is not type",
+	OrElse: "or else",
 	Plus: "+", Minus: "-", Star: "*", Slash: "/", Percent: "%", Caret: "^",
 	PlusPlus: "++", StarStar: "**",
 	Lt: "<", LtEq: "<=", Gt: ">", GtEq: ">=",
@@ -148,13 +153,13 @@ func (t Type) String() string {
 var Keywords = map[string]Type{
 	"true": True, "false": False, "null": Null, "inf": Inf, "nan": NaN, "undefined": Undefined,
 	"is": Is, "are": Are,
-	"from": From, "called": Called, "as": As, "named": Named, "with": With, "union": Union, "extends": Extends,
+	"from": From, "called": Called, "as": As, "named": Named, "with": With, "union": Union, "plus": PlusKw,
 	"to": To, "of": Of,
 	"and": And, "or": Or, "not": Not,
 	"if": If, "then": Then, "else": Else, "case": Case, "when": When,
 	"env": Env, "struct": Struct, "in": In,
 	"function": Function, "returns": Returns, "default": Default,
-	"self": Self, "lazy": Lazy, "type": TypeKw,
+	"type": TypeKw, "lazy": Lazy,
 }
 
 // IsKeyword reports whether s is a reserved UZON keyword.
