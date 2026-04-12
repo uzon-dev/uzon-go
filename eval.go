@@ -13,6 +13,25 @@ import (
 	"github.com/uzon-dev/uzon-go/token"
 )
 
+// TypeError is a type-level error that must always be reported, even in
+// speculatively evaluated branches (§D.5). Runtime errors (division by
+// zero, overflow, etc.) may be suppressed in non-selected branches, but
+// type errors are always propagated.
+type TypeError struct {
+	msg string
+}
+
+func (e *TypeError) Error() string { return "type error: " + e.msg }
+
+func typeErrorf(format string, args ...interface{}) error {
+	return &TypeError{msg: fmt.Sprintf(format, args...)}
+}
+
+func isTypeError(err error) bool {
+	var te *TypeError
+	return errors.As(err, &te)
+}
+
 // PosError is an error annotated with a source position (§11.2.0).
 // When Cause is a *PosError, Error() formats a stack-trace-like chain.
 type PosError struct {
@@ -117,6 +136,7 @@ type Evaluator struct {
 	env            map[string]string
 	baseDir        string
 	imported       map[string]*Value
+	importing      map[string]bool // tracks in-progress imports for cycle detection
 	callDepth      int
 }
 
@@ -130,6 +150,7 @@ func NewEvaluator() *Evaluator {
 		structShapes:   make(map[string][]string),
 		env:            envMap(),
 		imported:       make(map[string]*Value),
+		importing:      make(map[string]bool),
 	}
 }
 
@@ -260,21 +281,70 @@ func (ev *Evaluator) evalBindings(bindings []*ast.Binding, scope *Scope) (*Value
 			}
 		}
 	}
-	for name, refs := range funcRefs {
-		if refs[name] {
+	// §3.8: detect all call-graph cycles via DFS (direct, mutual, and transitive)
+	if cycle := detectCallCycle(funcRefs); len(cycle) > 0 {
+		name := cycle[0]
+		if len(cycle) == 1 {
 			return nil, &PosError{Pos: funcPos[name], Msg: fmt.Sprintf("direct recursion: %q calls itself", name)}
 		}
-	}
-	for a, aRefs := range funcRefs {
-		for b := range aRefs {
-			if bRefs, ok := funcRefs[b]; ok && bRefs[a] {
-				return nil, &PosError{Pos: funcPos[a], Msg: fmt.Sprintf("mutual recursion between %q and %q", a, b)}
-			}
-		}
+		return nil, &PosError{Pos: funcPos[name], Msg: fmt.Sprintf("recursion detected: %s", strings.Join(cycle, " → "))}
 	}
 
 	sv := &StructValue{Fields: fields}
 	return &Value{Kind: KindStruct, Struct: sv}, nil
+}
+
+// detectCallCycle performs DFS on the function call graph and returns
+// the first cycle found, or nil if the graph is acyclic. §3.8 requires
+// static detection of all call-graph cycles including transitive chains.
+func detectCallCycle(graph map[string]map[string]bool) []string {
+	const (
+		white = 0 // unvisited
+		gray  = 1 // in current DFS path
+		black = 2 // fully explored
+	)
+	color := make(map[string]int)
+	parent := make(map[string]string)
+
+	var dfs func(string) []string
+	dfs = func(u string) []string {
+		color[u] = gray
+		for v := range graph[u] {
+			if _, ok := graph[v]; !ok {
+				continue // not a function binding
+			}
+			if color[v] == gray {
+				// Back edge → cycle found. Reconstruct.
+				cycle := []string{v}
+				for cur := u; cur != v; cur = parent[cur] {
+					cycle = append(cycle, cur)
+				}
+				cycle = append(cycle, v)
+				// Reverse to get the cycle in forward order
+				for i, j := 0, len(cycle)-1; i < j; i, j = i+1, j-1 {
+					cycle[i], cycle[j] = cycle[j], cycle[i]
+				}
+				return cycle
+			}
+			if color[v] == white {
+				parent[v] = u
+				if c := dfs(v); c != nil {
+					return c
+				}
+			}
+		}
+		color[u] = black
+		return nil
+	}
+
+	for name := range graph {
+		if color[name] == white {
+			if c := dfs(name); c != nil {
+				return c
+			}
+		}
+	}
+	return nil
 }
 
 // topoSort performs Kahn's algorithm for topological ordering of bindings.

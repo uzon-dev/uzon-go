@@ -6,6 +6,8 @@ package uzon
 import (
 	"math"
 	"strings"
+
+	"github.com/uzon-dev/uzon-go/token"
 )
 
 // Marshal serializes a Value to UZON expression text.
@@ -67,6 +69,17 @@ func (e *emitter) emitFieldBinding(f Field) {
 
 // emitValue writes a Value as a UZON expression.
 func (e *emitter) emitValue(v *Value) {
+	e.emitValueInner(v, true)
+}
+
+// emitValueBare writes a Value without trailing type annotation.
+// Used for tagged union inner values in short form where the type
+// is implied by the variant definition.
+func (e *emitter) emitValueBare(v *Value) {
+	e.emitValueInner(v, false)
+}
+
+func (e *emitter) emitValueInner(v *Value, withAnnotation bool) {
 	switch v.Kind {
 	case KindNull:
 		e.sb.WriteString("null")
@@ -118,7 +131,7 @@ func (e *emitter) emitValue(v *Value) {
 		e.emitUnion(v)
 	case KindTaggedUnion:
 		if e.definedTypes != nil && v.Type != nil && v.Type.Name != "" && e.definedTypes[v.Type.Name] {
-			e.emitValue(v.TaggedUnion.Inner)
+			e.emitValueBare(v.TaggedUnion.Inner)
 			e.sb.WriteString(" as ")
 			e.sb.WriteString(v.Type.Name)
 			e.sb.WriteString(" named ")
@@ -131,7 +144,7 @@ func (e *emitter) emitValue(v *Value) {
 	}
 
 	// Emit non-default type annotation (§6)
-	if v.Type != nil && v.Type.BaseType != "" &&
+	if withAnnotation && v.Type != nil && v.Type.BaseType != "" &&
 		v.Kind != KindEnum && v.Kind != KindTaggedUnion && v.Kind != KindUnion {
 		if v.Type.Name != "__ident__" && needsTypeAnnotation(v) {
 			e.sb.WriteString(" as ")
@@ -266,15 +279,7 @@ func needsQuoting(name string) bool {
 
 // isKeyword checks whether a name is a UZON keyword requiring @ escape (§2.6).
 func isKeyword(name string) bool {
-	keywords := map[string]bool{
-		"true": true, "false": true, "null": true, "inf": true, "nan": true, "undefined": true,
-		"is": true, "are": true, "from": true, "called": true, "as": true, "named": true,
-		"with": true, "union": true, "plus": true, "to": true, "of": true,
-		"and": true, "or": true, "not": true, "if": true, "then": true, "else": true,
-		"case": true, "when": true, "env": true, "struct": true, "in": true,
-		"function": true, "returns": true, "default": true, "lazy": true, "type": true,
-	}
-	return keywords[name]
+	return token.IsKeyword(name)
 }
 
 // emitTuple writes a tuple literal. Single-element tuples include a trailing

@@ -313,7 +313,7 @@ func (ev *Evaluator) evalPlus(e *ast.PlusExpr, scope *Scope) (*Value, error) {
 		return nil, fmt.Errorf("plus: must add at least one new field")
 	}
 
-	return &Value{Kind: KindStruct, Struct: &StructValue{Fields: newFields}}, nil
+	return &Value{Kind: KindStruct, Struct: &StructValue{Fields: newFields}, Type: base.Type}, nil
 }
 
 // --- Enum, union, tagged union ---
@@ -360,7 +360,38 @@ func (ev *Evaluator) evalUnion(e *ast.UnionExpr, scope *Scope) (*Value, error) {
 		}
 		memberTypes = append(memberTypes, ti)
 	}
+	// Adoptable inner values adopt the first compatible member type.
+	if val.Adoptable {
+		for _, mt := range memberTypes {
+			if unionMemberCompatible(val, mt) {
+				val.Type = mt
+				val.Adoptable = false
+				break
+			}
+		}
+	}
 	return &Value{Kind: KindUnion, Union: &UnionValue{Inner: val, MemberTypes: memberTypes}}, nil
+}
+
+// unionMemberCompatible checks if an adoptable value is kind-compatible with a
+// union member type (integer→integer type, float→float type, etc.).
+func unionMemberCompatible(val *Value, mt *TypeInfo) bool {
+	if mt == nil {
+		return false
+	}
+	switch val.Kind {
+	case KindInt:
+		return isIntegerType(mt.BaseType)
+	case KindFloat:
+		return isFloatType(mt.BaseType)
+	case KindString:
+		return mt.BaseType == "string"
+	case KindBool:
+		return mt.BaseType == "bool"
+	case KindNull:
+		return mt.BaseType == "null"
+	}
+	return false
 }
 
 func (ev *Evaluator) evalNamed(e *ast.NamedExpr, scope *Scope) (*Value, error) {
@@ -383,9 +414,11 @@ func (ev *Evaluator) evalNamed(e *ast.NamedExpr, scope *Scope) (*Value, error) {
 	}
 
 	var variants []TaggedVariant
+	var reusedTypeName string // saved before inner type adoption overwrites it
 	if len(e.Variants) == 0 {
 		// Reuse registered type
 		if val.Type != nil && val.Type.Name != "" {
+			reusedTypeName = val.Type.Name
 			if registered, ok := ev.taggedVariants[val.Type.Name]; ok {
 				variants = registered
 				found := false
@@ -405,12 +438,26 @@ func (ev *Evaluator) evalNamed(e *ast.NamedExpr, scope *Scope) (*Value, error) {
 			variants = append(variants, TaggedVariant{Name: v.Name, Type: ev.resolveTypeExpr(v.TypeExpr)})
 		}
 	}
+	// §5: inner values adopt the active variant's declared type.
+	// For adoptable literals this is type adoption; for reused types
+	// (as TypeName named tag) this assigns the concrete variant type.
+	if len(variants) > 0 {
+		for _, v := range variants {
+			if v.Name == e.Tag && v.Type != nil {
+				if val.Adoptable || unionMemberCompatible(val, v.Type) {
+					val.Type = v.Type
+					val.Adoptable = false
+				}
+				break
+			}
+		}
+	}
 	result := &Value{
 		Kind:        KindTaggedUnion,
 		TaggedUnion: &TaggedUnionValue{Tag: e.Tag, Inner: val, Variants: variants},
 	}
-	if len(e.Variants) == 0 && val.Type != nil && val.Type.Name != "" {
-		result.Type = val.Type
+	if reusedTypeName != "" {
+		result.Type = &TypeInfo{Name: reusedTypeName}
 	}
 	return result, nil
 }
@@ -424,7 +471,7 @@ func (ev *Evaluator) evalIsNamed(e *ast.IsNamedExpr, scope *Scope) (*Value, erro
 		return nil, fmt.Errorf("'is named' on undefined")
 	}
 	if val.Kind != KindTaggedUnion {
-		return nil, fmt.Errorf("'is named' requires tagged union, got %s", val.Kind)
+		return nil, typeErrorf("'is named' requires tagged union, got %s", val.Kind)
 	}
 	// §3.7.2: variant name must be valid
 	if len(val.TaggedUnion.Variants) > 0 {
@@ -436,7 +483,7 @@ func (ev *Evaluator) evalIsNamed(e *ast.IsNamedExpr, scope *Scope) (*Value, erro
 			}
 		}
 		if !found {
-			return nil, fmt.Errorf("type error: '%s' is not a variant of this tagged union", e.Variant)
+			return nil, typeErrorf("'%s' is not a variant of this tagged union", e.Variant)
 		}
 	}
 	result := val.TaggedUnion.Tag == e.Variant
@@ -485,6 +532,13 @@ func (ev *Evaluator) evalStructImport(e *ast.StructImportExpr) (*Value, error) {
 		return cached, nil
 	}
 
+	// §7: circular imports are forbidden — detect in-progress imports
+	if ev.importing[path] {
+		return nil, &PosError{Pos: e.Position, Msg: fmt.Sprintf("circular import detected: %q", e.Path)}
+	}
+	ev.importing[path] = true
+	defer delete(ev.importing, path)
+
 	data, err := os.ReadFile(path)
 	if err != nil {
 		return nil, &PosError{Pos: e.Position, Msg: fmt.Sprintf("import %q", e.Path), Cause: err}
@@ -505,6 +559,7 @@ func (ev *Evaluator) evalStructImport(e *ast.StructImportExpr) (*Value, error) {
 		env:            ev.env,
 		baseDir:        filepath.Dir(path),
 		imported:       ev.imported,
+		importing:      ev.importing,
 	}
 
 	val, err := subEv.EvalDocument(doc)

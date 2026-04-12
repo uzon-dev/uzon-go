@@ -85,13 +85,22 @@ func (ev *Evaluator) callFunction(fn *Value, args []*Value) (*Value, error) {
 					arg.Adoptable = false
 				}
 			}
+			// §3.8: general parameter type assertion
+			if p.TypeExpr != nil && !arg.Adoptable {
+				pti := ev.resolveTypeExpr(p.TypeExpr)
+				if pti != nil && pti.BaseType != "" {
+					if !argTypeCompatible(arg, pti) {
+						return nil, typeErrorf("argument %q: expected %s, got %s", p.Name, pti.BaseType, arg.Kind)
+					}
+				}
+			}
 			// §6.3: nominal struct type check
 			if p.TypeExpr != nil && arg.Kind == KindStruct {
 				pti := ev.resolveTypeExpr(p.TypeExpr)
 				if pti != nil && pti.Name != "" {
 					if expectedFields, ok := ev.structShapes[pti.Name]; ok {
 						if len(arg.Struct.Fields) != len(expectedFields) {
-							return nil, fmt.Errorf("argument %q: expected %s (%d fields), got struct with %d fields",
+							return nil, typeErrorf("argument %q: expected %s (%d fields), got struct with %d fields",
 								p.Name, pti.Name, len(expectedFields), len(arg.Struct.Fields))
 						}
 					}
@@ -101,13 +110,35 @@ func (ev *Evaluator) callFunction(fn *Value, args []*Value) (*Value, error) {
 		}
 	}
 
-	// Evaluate intermediate bindings
-	for _, b := range fe.Bindings {
-		v, err := ev.evalExpr(b.Value, fnScope)
+	// Evaluate intermediate bindings with dependency analysis (§5.12)
+	if len(fe.Bindings) > 0 {
+		nameSet := make(map[string]bool, len(fe.Bindings))
+		for _, b := range fe.Bindings {
+			if nameSet[b.Name] {
+				return nil, fmt.Errorf("duplicate binding %q in function body", b.Name)
+			}
+			nameSet[b.Name] = true
+		}
+		deps := make(map[string][]string, len(fe.Bindings))
+		for _, b := range fe.Bindings {
+			refs := collectBindingDeps(b.Value)
+			for ref := range refs {
+				if ref != b.Name && nameSet[ref] {
+					deps[b.Name] = append(deps[b.Name], ref)
+				}
+			}
+		}
+		evalOrder, err := topoSort(fe.Bindings, deps)
 		if err != nil {
 			return nil, err
 		}
-		fnScope.set(b.Name, v)
+		for _, b := range evalOrder {
+			v, err := ev.evalExpr(b.Value, fnScope)
+			if err != nil {
+				return nil, err
+			}
+			fnScope.set(b.Name, v)
+		}
 	}
 
 	if fe.Body == nil {
@@ -126,6 +157,35 @@ func (ev *Evaluator) callFunction(fn *Value, args []*Value) (*Value, error) {
 	}
 
 	return result, nil
+}
+
+// argTypeCompatible checks if an argument's runtime kind matches a declared parameter type.
+func argTypeCompatible(arg *Value, pti *TypeInfo) bool {
+	switch arg.Kind {
+	case KindInt:
+		return isIntegerType(pti.BaseType)
+	case KindFloat:
+		return isFloatType(pti.BaseType)
+	case KindString:
+		return pti.BaseType == "string"
+	case KindBool:
+		return pti.BaseType == "bool"
+	case KindNull:
+		return pti.BaseType == "null"
+	case KindStruct:
+		return true // struct shape checked separately
+	case KindList:
+		return true // list element type checked by usage
+	case KindTuple:
+		return true // tuple shape checked separately
+	case KindEnum:
+		return true // enum type checked by variant matching
+	case KindFunction:
+		return true // function type checked by param/return matching
+	case KindTaggedUnion, KindUnion:
+		return true // union inner type varies
+	}
+	return true
 }
 
 // collectBindingDeps finds all sibling binding names referenced in an AST subtree.
@@ -297,7 +357,7 @@ func (ev *Evaluator) evalCall(e *ast.CallExpr, scope *Scope) (*Value, error) {
 		return nil, err
 	}
 	if fn.Kind != KindFunction {
-		return nil, fmt.Errorf("calling non-function value (%s)", fn.Kind)
+		return nil, typeErrorf("calling non-function value (%s)", fn.Kind)
 	}
 
 	// Evaluate arguments

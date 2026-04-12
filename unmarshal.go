@@ -9,7 +9,6 @@ import (
 	"math/big"
 	"os"
 	"reflect"
-	"strings"
 )
 
 // Unmarshal parses UZON text and decodes it into a Go value.
@@ -309,9 +308,4 @@ func valueToInterface(val *Value) any {
 	default:
 		return nil
 	}
-}
-
-// lookupName normalizes a name to lowercase for case-insensitive field matching.
-func lookupName(name string) string {
-	return strings.ToLower(name)
 }
