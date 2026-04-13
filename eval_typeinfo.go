@@ -63,6 +63,8 @@ func parseBuiltinType(name string) *TypeInfo {
 		return &TypeInfo{BaseType: "string"}
 	case "null":
 		return &TypeInfo{BaseType: "null"}
+	case "list", "tuple", "struct":
+		return &TypeInfo{BaseType: name}
 	}
 	return nil
 }

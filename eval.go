@@ -126,6 +126,23 @@ func (r *EnumRegistry) get(name string) ([]string, bool) {
 	return nil, false
 }
 
+// registerQualifiedTypes re-registers types from an inner struct scope
+// into the current scope with a qualified prefix (e.g. "outer.Color").
+func (ev *Evaluator) registerQualifiedTypes(prefix string, sts *structTypeScope) {
+	for name, ti := range sts.types {
+		ev.types.set(prefix+"."+name, ti)
+	}
+	for name, variants := range sts.enums {
+		ev.enums.enums[prefix+"."+name] = variants
+	}
+	for name, variants := range sts.tagged {
+		ev.taggedVariants[prefix+"."+name] = variants
+	}
+	for name, shape := range sts.shapes {
+		ev.structShapes[prefix+"."+name] = shape
+	}
+}
+
 // Evaluator evaluates UZON AST into Values.
 type Evaluator struct {
 	scope          *Scope
@@ -254,6 +271,11 @@ func (ev *Evaluator) evalBindings(bindings []*ast.Binding, scope *Scope) (*Value
 				copy(shape, v.Struct.Fields)
 				ev.structShapes[b.CalledName] = shape
 			}
+		}
+
+		// §6.2: re-register struct-scoped types with qualified prefix
+		if v.Kind == KindStruct && v.typeScope != nil {
+			ev.registerQualifiedTypes(b.Name, v.typeScope)
 		}
 
 		scope.set(b.Name, v)

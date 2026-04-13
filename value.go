@@ -97,6 +97,10 @@ type Value struct {
 	Union       *UnionValue
 	TaggedUnion *TaggedUnionValue
 	Function    *FunctionValue
+
+	// typeScope holds types defined inside this struct (§6.2), used for
+	// re-registering with qualified prefixes in the parent scope.
+	typeScope *structTypeScope
 }
 
 // TypeInfo holds type metadata for a value.
