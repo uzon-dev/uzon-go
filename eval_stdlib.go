@@ -7,6 +7,7 @@ import (
 	"fmt"
 	"sort"
 	"strings"
+	"unicode"
 
 	"github.com/uzon-dev/uzon-go/ast"
 )
@@ -544,5 +545,36 @@ func (ev *Evaluator) stdUpper(evalArgs func() ([]*Value, error)) (*Value, error)
 	if vals[0].Kind != KindString {
 		return nil, typeErrorf("std.upper: expected string argument")
 	}
-	return String(strings.ToUpper(vals[0].Str)), nil
+	return String(fullUnicodeUpper(vals[0].Str)), nil
+}
+
+// fullUnicodeUpper performs full Unicode case mapping including 1:N expansions
+// (e.g. ß → SS) that strings.ToUpper does not handle.
+func fullUnicodeUpper(s string) string {
+	var b strings.Builder
+	b.Grow(len(s))
+	for _, r := range s {
+		if mapped, ok := upperSpecial[r]; ok {
+			b.WriteString(mapped)
+		} else {
+			b.WriteRune(unicode.ToUpper(r))
+		}
+	}
+	return b.String()
+}
+
+// Unconditional 1:N upper-case mappings from Unicode SpecialCasing.txt.
+var upperSpecial = map[rune]string{
+	0x00DF: "SS",  // ß
+	0x0149: "\u02BCN", // ʼn
+	0x01F0: "J\u030C", // ǰ
+	0x0390: "\u0399\u0308\u0301", // ΐ
+	0x03B0: "\u03A5\u0308\u0301", // ΰ
+	0xFB00: "FF",  // ﬀ
+	0xFB01: "FI",  // ﬁ
+	0xFB02: "FL",  // ﬂ
+	0xFB03: "FFI", // ﬃ
+	0xFB04: "FFL", // ﬄ
+	0xFB05: "ST",  // ﬅ
+	0xFB06: "ST",  // ﬆ
 }

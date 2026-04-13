@@ -15,16 +15,26 @@ import (
 func (ev *Evaluator) evalFunctionDef(e *ast.FunctionExpr, scope *Scope) (*Value, error) {
 	var params []FuncParam
 	for _, p := range e.Params {
+		ti := ev.resolveTypeExpr(p.TypeExpr)
+		// §6.2: validate named types in function parameters
+		if ti != nil && ti.Name != "" && ti.BaseType == "" {
+			if _, ok := ev.types.get(p.TypeExpr.Path); !ok {
+				if parseBuiltinType(ti.Name) == nil {
+					return nil, typeErrorf("unknown type %q", ti.Name)
+				}
+			}
+		}
 		params = append(params, FuncParam{
 			Name: p.Name,
-			Type: ev.resolveTypeExpr(p.TypeExpr),
+			Type: ti,
 		})
 	}
+	retType := ev.resolveTypeExpr(e.ReturnType)
 	return &Value{
 		Kind: KindFunction,
 		Function: &FunctionValue{
 			Params:     params,
-			ReturnType: ev.resolveTypeExpr(e.ReturnType),
+			ReturnType: retType,
 			Body:       e,
 			Scope:      scope,
 		},

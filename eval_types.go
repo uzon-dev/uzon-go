@@ -14,9 +14,46 @@ import (
 
 // --- Compound types ---
 
+// structTypeScope holds type registrations made inside a struct, so they
+// can be re-registered with a qualified prefix in the parent scope.
+type structTypeScope struct {
+	types   map[string]*TypeInfo
+	enums   map[string][]string
+	tagged  map[string][]TaggedVariant
+	shapes  map[string][]Field
+}
+
 func (ev *Evaluator) evalStruct(e *ast.StructExpr, scope *Scope) (*Value, error) {
 	innerScope := newScope(scope)
-	return ev.evalBindings(e.Fields, innerScope)
+
+	// §6.2: types defined inside a struct are scoped to that struct.
+	outerTypes := ev.types
+	outerEnums := ev.enums
+	outerTagged := ev.taggedVariants
+	outerShapes := ev.structShapes
+	ev.types = newTypeRegistry(outerTypes)
+	ev.enums = newEnumRegistry(outerEnums)
+	ev.taggedVariants = make(map[string][]TaggedVariant)
+	ev.structShapes = make(map[string][]Field)
+
+	val, err := ev.evalBindings(e.Fields, innerScope)
+
+	// Capture inner registries before restoring.
+	if err == nil && val != nil {
+		val.typeScope = &structTypeScope{
+			types:  ev.types.types,
+			enums:  ev.enums.enums,
+			tagged: ev.taggedVariants,
+			shapes: ev.structShapes,
+		}
+	}
+
+	ev.types = outerTypes
+	ev.enums = outerEnums
+	ev.taggedVariants = outerTagged
+	ev.structShapes = outerShapes
+
+	return val, err
 }
 
 func (ev *Evaluator) evalList(e *ast.ListExpr, scope *Scope) (*Value, error) {
@@ -51,10 +88,69 @@ func (ev *Evaluator) evalList(e *ast.ListExpr, scope *Scope) (*Value, error) {
 						return nil, fmt.Errorf("list elements must be same type: got %s and %s at index %d", baseKind, el.Kind, i)
 					}
 				}
+				// §3.4: struct elements must have compatible shapes and nominal types
+				if baseKind == KindStruct {
+					if err := checkListStructHomogeneity(elems); err != nil {
+						return nil, err
+					}
+				}
 			}
 		}
 	}
 	return NewList(elems, nil), nil
+}
+
+// checkListStructHomogeneity validates that all struct elements in a list
+// have compatible shapes: same field count, same field names, same value
+// types, and same nominal type (§3.4).
+func checkListStructHomogeneity(elems []*Value) error {
+	// Find first non-null struct as reference
+	var ref *Value
+	for _, el := range elems {
+		if el.Kind == KindStruct {
+			ref = el
+			break
+		}
+	}
+	if ref == nil {
+		return nil
+	}
+	refName := ""
+	if ref.Type != nil {
+		refName = ref.Type.Name
+	}
+
+	for i, el := range elems {
+		if el.Kind != KindStruct {
+			continue
+		}
+		if el == ref {
+			continue
+		}
+		// Nominal type check
+		elName := ""
+		if el.Type != nil {
+			elName = el.Type.Name
+		}
+		if refName != elName {
+			return typeErrorf("list struct elements have different named types: %q vs %q at index %d", refName, elName, i)
+		}
+		// Field count check
+		if len(el.Struct.Fields) != len(ref.Struct.Fields) {
+			return typeErrorf("list struct elements have different field counts at index %d", i)
+		}
+		// Field names and value types check (order-independent)
+		for _, rf := range ref.Struct.Fields {
+			ev := el.Struct.Get(rf.Name)
+			if ev == nil {
+				return typeErrorf("list struct elements have different field names at index %d", i)
+			}
+			if rf.Value.Kind != ev.Kind && rf.Value.Kind != KindNull && ev.Kind != KindNull {
+				return typeErrorf("list struct field %q has different types at index %d", rf.Name, i)
+			}
+		}
+	}
+	return nil
 }
 
 func (ev *Evaluator) evalTuple(e *ast.TupleExpr, scope *Scope) (*Value, error) {
@@ -200,6 +296,15 @@ func (ev *Evaluator) evalAs(e *ast.AsExpr, scope *Scope) (*Value, error) {
 	if val.Kind == KindInt && ti.BitSize > 0 && isIntegerType(ti.BaseType) {
 		if err := checkIntRange(val.Int, ti.BitSize, ti.Signed); err != nil {
 			return nil, fmt.Errorf("as %s: %w", ti.BaseType, err)
+		}
+	}
+
+	// §6.2: named type must be resolvable — reject unknown type names
+	if ti.Name != "" && ti.BaseType == "" {
+		if _, ok := ev.types.get(e.TypeExpr.Path); !ok {
+			if parseBuiltinType(ti.Name) == nil {
+				return nil, typeErrorf("unknown type %q", ti.Name)
+			}
 		}
 	}
 
@@ -569,8 +674,8 @@ func (ev *Evaluator) evalStructImport(e *ast.StructImportExpr) (*Value, error) {
 		scope:          newScope(nil),
 		types:          newTypeRegistry(ev.types),
 		enums:          newEnumRegistry(ev.enums),
-		taggedVariants: ev.taggedVariants,
-		structShapes:   ev.structShapes,
+		taggedVariants: make(map[string][]TaggedVariant),
+		structShapes:   make(map[string][]Field),
 		env:            ev.env,
 		baseDir:        filepath.Dir(path),
 		imported:       ev.imported,
@@ -580,6 +685,16 @@ func (ev *Evaluator) evalStructImport(e *ast.StructImportExpr) (*Value, error) {
 	val, err := subEv.EvalDocument(doc)
 	if err != nil {
 		return nil, &PosError{Pos: e.Position, Msg: fmt.Sprintf("import %q", e.Path), Cause: err}
+	}
+
+	// Capture inner types so they can be re-registered with qualified prefix.
+	if val != nil {
+		val.typeScope = &structTypeScope{
+			types:  subEv.types.types,
+			enums:  subEv.enums.enums,
+			tagged: subEv.taggedVariants,
+			shapes: subEv.structShapes,
+		}
 	}
 
 	ev.imported[path] = val
