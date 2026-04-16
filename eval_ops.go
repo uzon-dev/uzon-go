@@ -158,12 +158,29 @@ func (ev *Evaluator) evalEquality(left, right *Value, negated bool) (*Value, err
 	if isUnresolvedIdent(right) {
 		right = Undefined()
 	}
-	// §3.6: unwrap untagged unions — compare inner values
-	if left.Kind == KindUnion {
-		left = left.Union.Inner
-	}
-	if right.Kind == KindUnion {
-		right = right.Union.Inner
+	// §v0.8: untagged union comparison rules
+	if left.Kind == KindUnion || right.Kind == KindUnion {
+		if left.Kind == KindUnion && right.Kind == KindUnion {
+			// Same union type → compare inner values; different runtime type → false
+			if left.Union.Inner.Kind != right.Union.Inner.Kind {
+				if negated {
+					return Bool(true), nil
+				}
+				return Bool(false), nil
+			}
+			eq := valuesEqual(left.Union.Inner, right.Union.Inner)
+			if negated {
+				return Bool(!eq), nil
+			}
+			return Bool(eq), nil
+		}
+		// Different types (union vs non-union) → type error
+		return nil, typeErrorf("cannot compare union with %s", func() ValueKind {
+			if left.Kind == KindUnion {
+				return right.Kind
+			}
+			return left.Kind
+		}())
 	}
 	// null and undefined are comparable with any type
 	if left.Kind == KindNull || left.Kind == KindUndefined ||
@@ -671,6 +688,13 @@ func (ev *Evaluator) evalComparison(op token.Type, left, right *Value) (*Value, 
 	if left.Kind == KindUndefined || right.Kind == KindUndefined ||
 		isUnresolvedIdent(left) || isUnresolvedIdent(right) {
 		return nil, fmt.Errorf("comparison on undefined")
+	}
+	// §v0.8: ordered comparison on functions, unions, and tagged unions is a type error
+	if left.Kind == KindFunction || right.Kind == KindFunction {
+		return nil, typeErrorf("ordered comparison on functions is not allowed")
+	}
+	if left.Kind == KindUnion || right.Kind == KindUnion {
+		return nil, typeErrorf("ordered comparison on untagged unions is not allowed")
 	}
 	if left.Kind == KindTaggedUnion && right.Kind == KindTaggedUnion {
 		return nil, typeErrorf("ordered comparison between two tagged union values is not allowed")
