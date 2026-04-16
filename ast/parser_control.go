@@ -68,6 +68,7 @@ func (p *Parser) parseCaseExpr() Expr {
 }
 
 // parseStructImport parses 'struct "path"' (§7).
+// §v0.8: interpolation is forbidden in struct import paths.
 func (p *Parser) parseStructImport() Expr {
 	pos := p.cur.Pos
 	p.expect(token.Struct)
@@ -76,6 +77,9 @@ func (p *Parser) parseStructImport() Expr {
 		return &StructImportExpr{Position: pos}
 	}
 	path := p.cur.Literal
+	if containsUnescapedBrace(path) {
+		p.errorf(p.cur.Pos, "struct import path must not contain interpolation")
+	}
 	p.advance()
 	return &StructImportExpr{Path: path, Position: pos}
 }
