@@ -302,6 +302,7 @@ func (ev *Evaluator) evalBindings(bindings []*ast.Binding, scope *Scope) (*Value
 		}
 	}
 	// §3.8: detect all call-graph cycles via DFS (direct, mutual, and transitive)
+	// Recursive calls are a circular dependency error per §3.8/§11.2.
 	if cycle := detectCallCycle(funcRefs); len(cycle) > 0 {
 		name := cycle[0]
 		if len(cycle) == 1 {
