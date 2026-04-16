@@ -884,8 +884,9 @@ func unionHasMemberType(members []*TypeInfo, ti *TypeInfo) bool {
 	if ti == nil {
 		return false
 	}
+	key := ti.TypeKey()
 	for _, m := range members {
-		if m.BaseType == ti.BaseType {
+		if m.TypeKey() == key {
 			return true
 		}
 		if m.Name != "" && m.Name == ti.Name {
@@ -1119,20 +1120,25 @@ func (ev *Evaluator) evalCase(e *ast.CaseExpr, scope *Scope) (*Value, error) {
 		case "type":
 			// Type dispatch: works on any value (§5.10).
 			// For unions, checks inner value; for others, checks concrete type.
+			// §v0.8: compound types ([T], (T, T)) are supported in when clauses.
 			ti := ev.resolveTypeExpr(w.TypeExpr)
 			// §5.10: when scrutinee is a union (tagged or untagged), validate
 			// when types against the union's member types.
 			if scrutinee.Kind == KindUnion {
 				if !unionHasMemberType(scrutinee.Union.MemberTypes, ti) {
-					return nil, typeErrorf("case type: %s is not a member of the union", ti.BaseType)
+					return nil, typeErrorf("case type: %s is not a member of the union", ti.TypeKey())
 				}
 			}
-			if scrutinee.Kind == KindTaggedUnion {
+			if scrutinee.Kind == KindTaggedUnion && ti.ListElemType == nil && len(ti.TupleElemTypes) == 0 {
 				if !taggedUnionHasInnerType(scrutinee.TaggedUnion.Variants, ti) {
 					return nil, typeErrorf("case type: %s is not a member type of the tagged union", ti.BaseType)
 				}
 			}
-			matched = ev.valueMatchesType(scrutinee, ti)
+			if ti.ListElemType != nil || len(ti.TupleElemTypes) > 0 {
+				matched = ev.valueMatchesCompoundType(scrutinee, ti)
+			} else {
+				matched = ev.valueMatchesType(scrutinee, ti)
+			}
 		case "named":
 			// Variant dispatch: match tagged union's tag
 			// §5.10: validate variant name against tagged union's variant list
@@ -1257,6 +1263,7 @@ func (ev *Evaluator) evalCase(e *ast.CaseExpr, scope *Scope) (*Value, error) {
 }
 
 // evalIsType implements "expr is type T" and "expr is not type T" (§5.2).
+// §v0.8: supports compound type expressions ([T], (T, T)).
 func (ev *Evaluator) evalIsType(e *ast.IsTypeExpr, scope *Scope) (*Value, error) {
 	val, err := ev.evalExpr(e.Value, scope)
 	if err != nil {
@@ -1266,7 +1273,12 @@ func (ev *Evaluator) evalIsType(e *ast.IsTypeExpr, scope *Scope) (*Value, error)
 		return nil, fmt.Errorf("'is type' on undefined")
 	}
 	ti := ev.resolveTypeExpr(e.TypeExpr)
-	matched := ev.valueMatchesType(val, ti)
+	var matched bool
+	if ti.ListElemType != nil || len(ti.TupleElemTypes) > 0 {
+		matched = ev.valueMatchesCompoundType(val, ti)
+	} else {
+		matched = ev.valueMatchesType(val, ti)
+	}
 	if e.Negated {
 		return Bool(!matched), nil
 	}
@@ -1275,6 +1287,7 @@ func (ev *Evaluator) evalIsType(e *ast.IsTypeExpr, scope *Scope) (*Value, error)
 
 // valueMatchesType checks if a value matches a type expression (for "is type" / "case type").
 // For union/tagged union values, the inner value is checked against the type (§5.2).
+// §v0.8: supports compound type matching: [T] for lists, (T, T) for tuples.
 func (ev *Evaluator) valueMatchesType(val *Value, ti *TypeInfo) bool {
 	if val == nil || ti == nil {
 		return false
@@ -1323,4 +1336,52 @@ func (ev *Evaluator) valueMatchesType(val *Value, ti *TypeInfo) bool {
 		return ti.Name == "function"
 	}
 	return false
+}
+
+// valueMatchesCompoundType checks if a value matches a compound TypeInfo
+// (e.g. [i32], (i32, string)) for case type dispatch (§v0.8).
+func (ev *Evaluator) valueMatchesCompoundType(val *Value, ti *TypeInfo) bool {
+	if val == nil || ti == nil {
+		return false
+	}
+	// Unwrap union/tagged union
+	if val.Kind == KindUnion {
+		return ev.valueMatchesCompoundType(val.Union.Inner, ti)
+	}
+	if val.Kind == KindTaggedUnion {
+		return ev.valueMatchesCompoundType(val.TaggedUnion.Inner, ti)
+	}
+	// List type: [ElemType]
+	if ti.ListElemType != nil {
+		if val.Kind != KindList {
+			return false
+		}
+		valElemTi := val.List.ElementType
+		if valElemTi == nil {
+			if len(val.List.Elements) > 0 {
+				valElemTi = ev.inferType(val.List.Elements[0])
+			} else {
+				return true // empty list matches any list type
+			}
+		}
+		return valElemTi.BaseType == ti.ListElemType.BaseType
+	}
+	// Tuple type: (Type, Type, ...)
+	if len(ti.TupleElemTypes) > 0 {
+		if val.Kind != KindTuple {
+			return false
+		}
+		if len(val.Tuple.Elements) != len(ti.TupleElemTypes) {
+			return false
+		}
+		for i, elem := range val.Tuple.Elements {
+			valElemTi := ev.inferType(elem)
+			if valElemTi.BaseType != ti.TupleElemTypes[i].BaseType {
+				return false
+			}
+		}
+		return true
+	}
+	// Simple type
+	return ev.valueMatchesType(val, ti)
 }

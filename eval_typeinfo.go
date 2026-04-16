@@ -21,10 +21,15 @@ func (ev *Evaluator) resolveTypeExpr(te *ast.TypeExpr) *TypeInfo {
 		return &TypeInfo{BaseType: "null"}
 	}
 	if te.ListElem != nil {
-		return &TypeInfo{BaseType: "list"}
+		elemTi := ev.resolveTypeExpr(te.ListElem)
+		return &TypeInfo{BaseType: "list", ListElemType: elemTi}
 	}
 	if len(te.TupleElems) > 0 {
-		return &TypeInfo{BaseType: "tuple"}
+		var elemTypes []*TypeInfo
+		for _, elem := range te.TupleElems {
+			elemTypes = append(elemTypes, ev.resolveTypeExpr(elem))
+		}
+		return &TypeInfo{BaseType: "tuple", TupleElemTypes: elemTypes}
 	}
 	if len(te.Path) > 0 {
 		name := strings.Join(te.Path, ".")

@@ -472,28 +472,44 @@ func (ev *Evaluator) evalUnion(e *ast.UnionExpr, scope *Scope) (*Value, error) {
 	seen := make(map[string]bool, len(e.MemberTypes))
 	for _, t := range e.MemberTypes {
 		ti := ev.resolveTypeExpr(t)
-		if ti != nil && ti.BaseType != "" {
-			if seen[ti.BaseType] {
-				return nil, fmt.Errorf("duplicate type %q in union", ti.BaseType)
+		if ti != nil {
+			key := ti.TypeKey()
+			if key != "" {
+				if seen[key] {
+					return nil, fmt.Errorf("duplicate type %q in union", key)
+				}
+				seen[key] = true
 			}
-			seen[ti.BaseType] = true
 		}
 		memberTypes = append(memberTypes, ti)
 	}
-	// Adoptable inner values adopt the first compatible member type.
-	if val.Adoptable {
-		for _, mt := range memberTypes {
-			if unionMemberCompatible(val, mt) {
+	// Inner values adopt the first compatible member type.
+	adopted := false
+	for _, mt := range memberTypes {
+		if unionMemberCompatible(val, mt) {
+			if val.Adoptable {
 				val.Type = mt
 				val.Adoptable = false
-				break
 			}
+			// §v0.8: propagate compound type info for list/tuple
+			if val.Kind == KindList && mt.ListElemType != nil {
+				val.List.ElementType = mt.ListElemType
+				for _, el := range val.List.Elements {
+					if el.Adoptable {
+						el.Type = mt.ListElemType
+						el.Adoptable = false
+					}
+				}
+			}
+			adopted = true
+			break
 		}
 	}
+	_ = adopted
 	return &Value{Kind: KindUnion, Union: &UnionValue{Inner: val, MemberTypes: memberTypes}}, nil
 }
 
-// unionMemberCompatible checks if an adoptable value is kind-compatible with a
+// unionMemberCompatible checks if a value is kind-compatible with a
 // union member type (integer→integer type, float→float type, etc.).
 func unionMemberCompatible(val *Value, mt *TypeInfo) bool {
 	if mt == nil {
@@ -510,6 +526,52 @@ func unionMemberCompatible(val *Value, mt *TypeInfo) bool {
 		return mt.BaseType == "bool"
 	case KindNull:
 		return mt.BaseType == "null"
+	case KindList:
+		if mt.BaseType != "list" {
+			return false
+		}
+		if mt.ListElemType != nil && len(val.List.Elements) > 0 {
+			for _, el := range val.List.Elements {
+				if !elementCompatible(el, mt.ListElemType) {
+					return false
+				}
+			}
+		}
+		return true
+	case KindTuple:
+		if mt.BaseType != "tuple" {
+			return false
+		}
+		if len(mt.TupleElemTypes) > 0 {
+			if len(val.Tuple.Elements) != len(mt.TupleElemTypes) {
+				return false
+			}
+			for i, el := range val.Tuple.Elements {
+				if !elementCompatible(el, mt.TupleElemTypes[i]) {
+					return false
+				}
+			}
+		}
+		return true
+	case KindStruct:
+		return mt.BaseType == "struct"
+	}
+	return false
+}
+
+// elementCompatible checks if a value's kind matches a target type.
+func elementCompatible(val *Value, ti *TypeInfo) bool {
+	switch val.Kind {
+	case KindInt:
+		return isIntegerType(ti.BaseType)
+	case KindFloat:
+		return isFloatType(ti.BaseType)
+	case KindString:
+		return ti.BaseType == "string"
+	case KindBool:
+		return ti.BaseType == "bool"
+	case KindNull:
+		return ti.BaseType == "null"
 	}
 	return false
 }

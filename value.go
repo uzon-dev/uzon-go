@@ -110,6 +110,34 @@ type TypeInfo struct {
 	BitSize  int      // for numeric types: bit width (e.g. 32 for i32)
 	Signed   bool     // for integer types: true if signed (iN), false if unsigned (uN)
 	Path     []string // qualified type path segments (e.g. ["inner", "RGB"])
+
+	// Compound type info (§v0.8)
+	ListElemType  *TypeInfo   // for [T] list types
+	TupleElemTypes []*TypeInfo // for (T, T) tuple types
+}
+
+// TypeKey returns a unique string representation for deduplication.
+func (ti *TypeInfo) TypeKey() string {
+	if ti.ListElemType != nil {
+		return "[" + ti.ListElemType.TypeKey() + "]"
+	}
+	if len(ti.TupleElemTypes) > 0 {
+		s := "("
+		for i, et := range ti.TupleElemTypes {
+			if i > 0 {
+				s += ","
+			}
+			s += et.TypeKey()
+		}
+		return s + ")"
+	}
+	if ti.BaseType != "" {
+		return ti.BaseType
+	}
+	if ti.Name != "" {
+		return ti.Name
+	}
+	return ""
 }
 
 // StructValue represents a UZON struct — a collection of named fields.
