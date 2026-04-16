@@ -200,6 +200,16 @@ func (ev *Evaluator) convertToInt(val *Value, target *TypeInfo) (*Value, error) 
 }
 
 func checkIntRange(n *big.Int, bits int, signed bool) error {
+	// §v0.8: i0/u0 are unit types — only value 0 is valid.
+	if bits == 0 {
+		if n.Sign() != 0 {
+			if signed {
+				return fmt.Errorf("value %s out of range for i0", n)
+			}
+			return fmt.Errorf("value %s out of range for u0", n)
+		}
+		return nil
+	}
 	if signed {
 		min := new(big.Int).Lsh(big.NewInt(-1), uint(bits-1))
 		max := new(big.Int).Sub(new(big.Int).Lsh(big.NewInt(1), uint(bits-1)), big.NewInt(1))
