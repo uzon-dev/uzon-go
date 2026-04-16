@@ -151,7 +151,7 @@ func (ev *Evaluator) stdGet(evalArgs func() ([]*Value, error)) (*Value, error) {
 	switch coll.Kind {
 	case KindList:
 		if key.Kind != KindInt {
-			return nil, typeErrorf("std.get: list index must be integer")
+			return nil, typeErrorf("std.get: list index must be integer, got %s", key.Kind)
 		}
 		idx := int(key.Int.Int64())
 		if idx >= 0 && idx < len(coll.List.Elements) {
@@ -160,7 +160,7 @@ func (ev *Evaluator) stdGet(evalArgs func() ([]*Value, error)) (*Value, error) {
 		return Undefined(), nil
 	case KindTuple:
 		if key.Kind != KindInt {
-			return nil, typeErrorf("std.get: tuple index must be integer")
+			return nil, typeErrorf("std.get: tuple index must be integer, got %s", key.Kind)
 		}
 		idx := int(key.Int.Int64())
 		if idx >= 0 && idx < len(coll.Tuple.Elements) {
@@ -169,7 +169,7 @@ func (ev *Evaluator) stdGet(evalArgs func() ([]*Value, error)) (*Value, error) {
 		return Undefined(), nil
 	case KindStruct:
 		if key.Kind != KindString {
-			return nil, typeErrorf("std.get: struct key must be string")
+			return nil, typeErrorf("std.get: struct key must be string, got %s", key.Kind)
 		}
 		v := coll.Struct.Get(key.Str)
 		if v == nil {
