@@ -2,7 +2,7 @@
 // SPDX-License-Identifier: MIT
 
 // Package uzon implements a parser, evaluator, and converter for the UZON
-// data format (spec v0.7). It provides two modes of operation:
+// data format (spec v0.8). It provides two modes of operation:
 //
 // UZON-native types (lossless):
 //
