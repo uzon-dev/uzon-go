@@ -45,8 +45,8 @@ func (ev *Evaluator) evalStdCall(name string, args []ast.Expr, scope *Scope) (*V
 	switch name {
 	case "len":
 		return ev.stdLen(evalArgs)
-	case "has":
-		return ev.stdHas(evalArgs)
+	case "hasKey":
+		return ev.stdHasKey(evalArgs)
 	case "get":
 		return ev.stdGet(evalArgs)
 	case "keys":
@@ -107,63 +107,24 @@ func (ev *Evaluator) stdLen(evalArgs func() ([]*Value, error)) (*Value, error) {
 	}
 }
 
-func (ev *Evaluator) stdHas(evalArgs func() ([]*Value, error)) (*Value, error) {
+// stdHasKey implements std.hasKey(struct, key) — key existence check (§v0.8).
+// List value membership is now handled by the `in` operator.
+func (ev *Evaluator) stdHasKey(evalArgs func() ([]*Value, error)) (*Value, error) {
 	vals, err := evalArgs()
 	if err != nil {
 		return nil, err
 	}
 	if len(vals) != 2 {
-		return nil, fmt.Errorf("std.has expects 2 arguments, got %d", len(vals))
+		return nil, fmt.Errorf("std.hasKey expects 2 arguments, got %d", len(vals))
 	}
 	coll, key := unwrapUnion(vals[0]), vals[1]
-	switch coll.Kind {
-	case KindList:
-		// §5.16.1: type compatibility check (same rules as `in`)
-		if len(coll.List.Elements) > 0 && key.Kind != KindNull {
-			var listElem *Value
-			for _, el := range coll.List.Elements {
-				if el.Kind != KindNull {
-					listElem = el
-					break
-				}
-			}
-			if listElem != nil && key.Kind != listElem.Kind {
-				return nil, typeErrorf("std.has: type mismatch: searching for %s in list of %s", key.Kind, listElem.Kind)
-			}
-			if listElem != nil && key.Kind == KindEnum && listElem.Kind == KindEnum {
-				lt, rt := key.Type, listElem.Type
-				if lt != nil && rt != nil && lt.Name != "" && rt.Name != "" && lt.Name != rt.Name {
-					return nil, typeErrorf("std.has: enum type mismatch: %s vs %s", lt.Name, rt.Name)
-				}
-			}
-			if listElem != nil && key.Kind == KindInt && listElem.Kind == KindInt {
-				lt := key.Type
-				rt := listElem.Type
-				if lt == nil {
-					lt = &TypeInfo{BaseType: "i64", BitSize: 64, Signed: true}
-				}
-				if rt == nil {
-					rt = &TypeInfo{BaseType: "i64", BitSize: 64, Signed: true}
-				}
-				if lt.BaseType != rt.BaseType {
-					return nil, typeErrorf("std.has: numeric type mismatch: %s vs %s", lt.BaseType, rt.BaseType)
-				}
-			}
-		}
-		for _, e := range coll.List.Elements {
-			if valuesEqual(e, key) {
-				return Bool(true), nil
-			}
-		}
-		return Bool(false), nil
-	case KindStruct:
-		if key.Kind != KindString {
-			return nil, typeErrorf("std.has: struct key must be string")
-		}
-		return Bool(coll.Struct.Get(key.Str) != nil), nil
-	default:
-		return nil, typeErrorf("std.has: expected collection, got %s", coll.Kind)
+	if coll.Kind != KindStruct {
+		return nil, typeErrorf("std.hasKey: expected struct, got %s", coll.Kind)
 	}
+	if key.Kind != KindString {
+		return nil, typeErrorf("std.hasKey: key must be string")
+	}
+	return Bool(coll.Struct.Get(key.Str) != nil), nil
 }
 
 func (ev *Evaluator) stdGet(evalArgs func() ([]*Value, error)) (*Value, error) {
