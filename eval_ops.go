@@ -236,6 +236,11 @@ func (ev *Evaluator) evalEquality(left, right *Value, negated bool) (*Value, err
 		right = promoteIntToFloat(right, left.Type)
 	}
 
+	// §5.2: comparing different types is a type error
+	if left.Kind != right.Kind {
+		return nil, typeErrorf("cannot compare %s with %s", left.Kind, right.Kind)
+	}
+
 	eq := valuesEqual(left, right)
 	if negated {
 		return Bool(!eq), nil
@@ -663,7 +668,7 @@ func (ev *Evaluator) evalRepeat(left, right *Value) (*Value, error) {
 	left = unwrapTaggedUnion(left)
 	right = unwrapTaggedUnion(right)
 	if right.Kind != KindInt {
-		return nil, fmt.Errorf("** requires integer right operand, got %s", right.Kind)
+		return nil, typeErrorf("** requires integer right operand, got %s", right.Kind)
 	}
 	n := right.Int.Int64()
 	if n < 0 {
@@ -1176,7 +1181,7 @@ func (ev *Evaluator) evalCase(e *ast.CaseExpr, scope *Scope) (*Value, error) {
 		default:
 			// Value matching
 			if _, ok := w.Value.(*ast.UndefinedExpr); ok {
-				return nil, fmt.Errorf("'when undefined' is not allowed in case expressions")
+				return nil, typeErrorf("'when undefined' is not allowed in case expressions")
 			}
 			wVal, err := ev.evalExpr(w.Value, scope)
 			if err != nil {

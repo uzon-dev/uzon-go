@@ -24,6 +24,9 @@ type Parser struct {
 	// Set when parsing binding values inside function bodies so that the
 	// return expression is not consumed as part of a preceding binding value.
 	noStringConcat bool
+
+	// inFunctionBody suppresses 'called' and 'are' inside function bodies (§3.8).
+	inFunctionBody bool
 }
 
 // NewParser creates a new parser from source bytes.
@@ -172,9 +175,14 @@ func (p *Parser) parseBinding() *Binding {
 	}
 
 	// Optional trailing "called Name" for type naming (§6).
+	// §3.8: called is not permitted inside function bodies.
 	if p.at(token.Called) {
-		p.advance()
-		b.CalledName = p.parseName()
+		if p.inFunctionBody {
+			p.errorf(p.cur.Pos, "'called' is not permitted inside function bodies")
+		} else {
+			p.advance()
+			b.CalledName = p.parseName()
+		}
 	}
 
 	return b

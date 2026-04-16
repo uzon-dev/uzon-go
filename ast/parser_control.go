@@ -133,6 +133,8 @@ func (p *Parser) parseFunctionExpr() Expr {
 
 	saved := p.noStringConcat
 	p.noStringConcat = true
+	savedFuncBody := p.inFunctionBody
+	p.inFunctionBody = true
 
 	for !p.at(token.RBrace) && !p.at(token.EOF) {
 		// Detect intermediate bindings: only plain Is, not Are or composite
@@ -160,6 +162,7 @@ func (p *Parser) parseFunctionExpr() Expr {
 	}
 
 	p.noStringConcat = saved
+	p.inFunctionBody = savedFuncBody
 
 	p.expect(token.RBrace)
 

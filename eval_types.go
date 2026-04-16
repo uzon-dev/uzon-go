@@ -181,7 +181,7 @@ func (ev *Evaluator) evalAs(e *ast.AsExpr, scope *Scope) (*Value, error) {
 			// Named type — check it exists in the type registry or as a builtin
 			if _, ok := ev.types.get(e.TypeExpr.Path); !ok {
 				if parseBuiltinType(ti.Name) == nil {
-					return nil, fmt.Errorf("unknown type %q", ti.Name)
+					return nil, typeErrorf("unknown type %q", ti.Name)
 				}
 			}
 		}
@@ -325,7 +325,7 @@ func (ev *Evaluator) evalWith(e *ast.WithExpr, scope *Scope) (*Value, error) {
 		return nil, fmt.Errorf("with: base is undefined")
 	}
 	if base.Kind != KindStruct {
-		return nil, fmt.Errorf("with: base must be a struct, got %s", base.Kind)
+		return nil, typeErrorf("with: base must be a struct, got %s", base.Kind)
 	}
 
 	newFields := make([]Field, len(base.Struct.Fields))
@@ -335,6 +335,10 @@ func (ev *Evaluator) evalWith(e *ast.WithExpr, scope *Scope) (*Value, error) {
 		v, err := ev.evalExpr(ob.Value, scope)
 		if err != nil {
 			return nil, err
+		}
+		// §3.2.1: override evaluating to undefined is a runtime error
+		if v.Kind == KindUndefined || isUnresolvedIdent(v) {
+			return nil, fmt.Errorf("with: override field %q evaluates to undefined", ob.Name)
 		}
 		found := false
 		for i, f := range newFields {
@@ -351,7 +355,7 @@ func (ev *Evaluator) evalWith(e *ast.WithExpr, scope *Scope) (*Value, error) {
 			}
 		}
 		if !found {
-			return nil, fmt.Errorf("with: unknown field %q", ob.Name)
+			return nil, typeErrorf("with: unknown field %q", ob.Name)
 		}
 	}
 
@@ -366,12 +370,12 @@ func (ev *Evaluator) checkWithTypeCompat(original, override *Value, fieldName st
 	if original.Type != nil && original.Type.BaseType != "" && original.Type.Name != "__ident__" {
 		if override.Type != nil && override.Type.BaseType != "" && override.Type.Name != "__ident__" {
 			if original.Type.BaseType != override.Type.BaseType {
-				return fmt.Errorf("field %q: type %s incompatible with %s", fieldName, override.Type.BaseType, original.Type.BaseType)
+				return typeErrorf("field %q: type %s incompatible with %s", fieldName, override.Type.BaseType, original.Type.BaseType)
 			}
 		}
 	}
 	if original.Kind != override.Kind {
-		return fmt.Errorf("field %q: cannot override %s with %s", fieldName, original.Kind, override.Kind)
+		return typeErrorf("field %q: cannot override %s with %s", fieldName, original.Kind, override.Kind)
 	}
 	return nil
 }
@@ -386,7 +390,7 @@ func (ev *Evaluator) evalPlus(e *ast.PlusExpr, scope *Scope) (*Value, error) {
 		return nil, fmt.Errorf("plus: base is undefined")
 	}
 	if base.Kind != KindStruct {
-		return nil, fmt.Errorf("plus: base must be a struct, got %s", base.Kind)
+		return nil, typeErrorf("plus: base must be a struct, got %s", base.Kind)
 	}
 
 	newFields := make([]Field, len(base.Struct.Fields))
@@ -397,6 +401,10 @@ func (ev *Evaluator) evalPlus(e *ast.PlusExpr, scope *Scope) (*Value, error) {
 		v, err := ev.evalExpr(ob.Value, scope)
 		if err != nil {
 			return nil, err
+		}
+		// §3.2.2: field evaluating to undefined is a runtime error (both override and new)
+		if v.Kind == KindUndefined || isUnresolvedIdent(v) {
+			return nil, fmt.Errorf("plus: field %q evaluates to undefined", ob.Name)
 		}
 		found := false
 		for i, f := range newFields {
@@ -413,20 +421,17 @@ func (ev *Evaluator) evalPlus(e *ast.PlusExpr, scope *Scope) (*Value, error) {
 			}
 		}
 		if !found {
-			// §v0.8: new field evaluating to undefined is a runtime error
-			if v.Kind == KindUndefined || isUnresolvedIdent(v) {
-				return nil, fmt.Errorf("plus: new field %q evaluates to undefined", ob.Name)
-			}
 			hasNew = true
 			newFields = append(newFields, Field{Name: ob.Name, Value: v})
 		}
 	}
 
 	if !hasNew {
-		return nil, fmt.Errorf("plus: must add at least one new field")
+		return nil, typeErrorf("plus: must add at least one new field")
 	}
 
-	return &Value{Kind: KindStruct, Struct: &StructValue{Fields: newFields}, Type: base.Type}, nil
+	// §3.2.2: plus always produces a new type — named type is NOT inherited
+	return &Value{Kind: KindStruct, Struct: &StructValue{Fields: newFields}}, nil
 }
 
 // --- Enum, union, tagged union ---
@@ -468,6 +473,9 @@ func (ev *Evaluator) evalFrom(e *ast.FromExpr, scope *Scope) (*Value, error) {
 }
 
 func (ev *Evaluator) evalUnion(e *ast.UnionExpr, scope *Scope) (*Value, error) {
+	if len(e.MemberTypes) < 2 {
+		return nil, typeErrorf("union must have at least 2 member types, got %d", len(e.MemberTypes))
+	}
 	val, err := ev.evalExpr(e.Value, scope)
 	if err != nil {
 		return nil, err
@@ -480,7 +488,7 @@ func (ev *Evaluator) evalUnion(e *ast.UnionExpr, scope *Scope) (*Value, error) {
 			key := ti.TypeKey()
 			if key != "" {
 				if seen[key] {
-					return nil, fmt.Errorf("duplicate type %q in union", key)
+					return nil, typeErrorf("duplicate type %q in union", key)
 				}
 				seen[key] = true
 			}
