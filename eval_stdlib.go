@@ -79,6 +79,18 @@ func (ev *Evaluator) evalStdCall(name string, args []ast.Expr, scope *Scope) (*V
 		return ev.stdLower(evalArgs)
 	case "upper":
 		return ev.stdUpper(evalArgs)
+	case "reverse":
+		return ev.stdReverse(evalArgs)
+	case "all":
+		return ev.stdAll(evalArgs)
+	case "any":
+		return ev.stdAny(evalArgs)
+	case "contains":
+		return ev.stdContains(evalArgs)
+	case "startsWith":
+		return ev.stdStartsWith(evalArgs)
+	case "endsWith":
+		return ev.stdEndsWith(evalArgs)
 	default:
 		return nil, fmt.Errorf("unknown std function: %s", name)
 	}
@@ -507,6 +519,136 @@ func (ev *Evaluator) stdUpper(evalArgs func() ([]*Value, error)) (*Value, error)
 		return nil, typeErrorf("std.upper: expected string argument")
 	}
 	return String(fullUnicodeUpper(vals[0].Str)), nil
+}
+
+func (ev *Evaluator) stdReverse(evalArgs func() ([]*Value, error)) (*Value, error) {
+	vals, err := evalArgs()
+	if err != nil {
+		return nil, err
+	}
+	if len(vals) != 1 {
+		return nil, fmt.Errorf("std.reverse expects 1 argument, got %d", len(vals))
+	}
+	vals[0] = unwrapUnion(vals[0])
+	switch vals[0].Kind {
+	case KindList:
+		n := len(vals[0].List.Elements)
+		reversed := make([]*Value, n)
+		for i, el := range vals[0].List.Elements {
+			reversed[n-1-i] = el
+		}
+		return NewList(reversed, vals[0].List.ElementType), nil
+	case KindString:
+		runes := []rune(vals[0].Str)
+		for i, j := 0, len(runes)-1; i < j; i, j = i+1, j-1 {
+			runes[i], runes[j] = runes[j], runes[i]
+		}
+		return String(string(runes)), nil
+	default:
+		return nil, typeErrorf("std.reverse: expected list or string, got %s", vals[0].Kind)
+	}
+}
+
+func (ev *Evaluator) stdAll(evalArgs func() ([]*Value, error)) (*Value, error) {
+	vals, err := evalArgs()
+	if err != nil {
+		return nil, err
+	}
+	if len(vals) != 2 {
+		return nil, fmt.Errorf("std.all expects 2 arguments, got %d", len(vals))
+	}
+	list, fn := vals[0], vals[1]
+	if list.Kind != KindList {
+		return nil, typeErrorf("std.all: first argument must be list")
+	}
+	if fn.Kind != KindFunction {
+		return nil, typeErrorf("std.all: second argument must be function")
+	}
+	for _, elem := range list.List.Elements {
+		r, err := ev.callFunction(fn, []*Value{elem})
+		if err != nil {
+			return nil, err
+		}
+		if r.Kind != KindBool {
+			return nil, fmt.Errorf("std.all: predicate must return bool, got %s", r.Kind)
+		}
+		if !r.Bool {
+			return Bool(false), nil
+		}
+	}
+	return Bool(true), nil // empty list → true
+}
+
+func (ev *Evaluator) stdAny(evalArgs func() ([]*Value, error)) (*Value, error) {
+	vals, err := evalArgs()
+	if err != nil {
+		return nil, err
+	}
+	if len(vals) != 2 {
+		return nil, fmt.Errorf("std.any expects 2 arguments, got %d", len(vals))
+	}
+	list, fn := vals[0], vals[1]
+	if list.Kind != KindList {
+		return nil, typeErrorf("std.any: first argument must be list")
+	}
+	if fn.Kind != KindFunction {
+		return nil, typeErrorf("std.any: second argument must be function")
+	}
+	for _, elem := range list.List.Elements {
+		r, err := ev.callFunction(fn, []*Value{elem})
+		if err != nil {
+			return nil, err
+		}
+		if r.Kind != KindBool {
+			return nil, fmt.Errorf("std.any: predicate must return bool, got %s", r.Kind)
+		}
+		if r.Bool {
+			return Bool(true), nil
+		}
+	}
+	return Bool(false), nil // empty list → false
+}
+
+func (ev *Evaluator) stdContains(evalArgs func() ([]*Value, error)) (*Value, error) {
+	vals, err := evalArgs()
+	if err != nil {
+		return nil, err
+	}
+	if len(vals) != 2 {
+		return nil, fmt.Errorf("std.contains expects 2 arguments, got %d", len(vals))
+	}
+	if vals[0].Kind != KindString || vals[1].Kind != KindString {
+		return nil, typeErrorf("std.contains: both arguments must be string")
+	}
+	return Bool(strings.Contains(vals[0].Str, vals[1].Str)), nil
+}
+
+func (ev *Evaluator) stdStartsWith(evalArgs func() ([]*Value, error)) (*Value, error) {
+	vals, err := evalArgs()
+	if err != nil {
+		return nil, err
+	}
+	if len(vals) != 2 {
+		return nil, fmt.Errorf("std.startsWith expects 2 arguments, got %d", len(vals))
+	}
+	if vals[0].Kind != KindString || vals[1].Kind != KindString {
+		return nil, typeErrorf("std.startsWith: both arguments must be string")
+	}
+	return Bool(strings.HasPrefix(vals[0].Str, vals[1].Str)), nil
+}
+
+func (ev *Evaluator) stdEndsWith(evalArgs func() ([]*Value, error)) (*Value, error) {
+	vals, err := evalArgs()
+	if err != nil {
+		return nil, err
+	}
+	if len(vals) != 2 {
+		return nil, fmt.Errorf("std.endsWith expects 2 arguments, got %d", len(vals))
+	}
+	if vals[0].Kind != KindString || vals[1].Kind != KindString {
+		return nil, typeErrorf("std.endsWith: both arguments must be string")
+	}
+	return Bool(strings.HasSuffix(vals[0].Str, vals[1].Str)), nil
 }
 
 // fullUnicodeUpper performs full Unicode case mapping including 1:N expansions
