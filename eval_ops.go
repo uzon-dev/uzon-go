@@ -289,14 +289,30 @@ func valuesEqual(a, b *Value) bool {
 }
 
 // evalIn implements the "in" membership operator (§5.8.1).
+// v0.8: extended to list, tuple, and struct.
 func (ev *Evaluator) evalIn(left, right *Value) (*Value, error) {
-	// §3.1: undefined in "in" is a runtime error
+	// §3.1: undefined as operand is a runtime error
 	if left.Kind == KindUndefined || right.Kind == KindUndefined {
 		return nil, fmt.Errorf("'in' on undefined")
 	}
-	if right.Kind != KindList {
-		return nil, fmt.Errorf("'in' requires a list on the right side, got %s", right.Kind)
+	if isUnresolvedIdent(right) {
+		return nil, fmt.Errorf("'in' on undefined")
 	}
+
+	switch right.Kind {
+	case KindList:
+		return ev.evalInList(left, right)
+	case KindTuple:
+		return ev.evalInTuple(left, right)
+	case KindStruct:
+		return ev.evalInStruct(left, right)
+	default:
+		return nil, fmt.Errorf("'in' requires list, tuple, or struct on the right side, got %s", right.Kind)
+	}
+}
+
+// evalInList handles "x in [list]" with type checking.
+func (ev *Evaluator) evalInList(left, right *Value) (*Value, error) {
 	// §3.5 type-context inference: bare ident in "x in [enum_list]" resolves as variant
 	if isUnresolvedIdent(left) && len(right.List.Elements) > 0 {
 		resolved := false
@@ -314,13 +330,17 @@ func (ev *Evaluator) evalIn(left, right *Value) (*Value, error) {
 			return nil, fmt.Errorf("'in' on undefined")
 		}
 	}
-	if isUnresolvedIdent(right) {
+	if isUnresolvedIdent(left) {
 		return nil, fmt.Errorf("'in' on undefined")
 	}
-	if len(right.List.Elements) > 0 && left.Kind != KindNull {
+	// §v0.8: empty list — always false, element type inferred from left
+	if len(right.List.Elements) == 0 {
+		return Bool(false), nil
+	}
+	if left.Kind != KindNull {
 		var listElem *Value
 		for _, el := range right.List.Elements {
-			if el.Kind != KindNull {
+			if el.Kind != KindNull && el.Kind != KindUndefined {
 				listElem = el
 				break
 			}
@@ -349,7 +369,42 @@ func (ev *Evaluator) evalIn(left, right *Value) (*Value, error) {
 		}
 	}
 	for _, elem := range right.List.Elements {
+		if elem.Kind == KindUndefined {
+			continue // undefined elements → skip
+		}
 		if valuesEqual(left, elem) {
+			return Bool(true), nil
+		}
+	}
+	return Bool(false), nil
+}
+
+// evalInTuple handles "x in (tuple)" — heterogeneous, type mismatch skipped.
+func (ev *Evaluator) evalInTuple(left, right *Value) (*Value, error) {
+	if isUnresolvedIdent(left) {
+		return nil, fmt.Errorf("'in' on undefined")
+	}
+	for _, elem := range right.Tuple.Elements {
+		if elem.Kind == KindUndefined {
+			continue // undefined elements → skip
+		}
+		if valuesEqual(left, elem) {
+			return Bool(true), nil
+		}
+	}
+	return Bool(false), nil
+}
+
+// evalInStruct handles "x in {struct}" — value membership (not key).
+func (ev *Evaluator) evalInStruct(left, right *Value) (*Value, error) {
+	if isUnresolvedIdent(left) {
+		return nil, fmt.Errorf("'in' on undefined")
+	}
+	for _, field := range right.Struct.Fields {
+		if field.Value.Kind == KindUndefined {
+			continue // undefined values → skip
+		}
+		if valuesEqual(left, field.Value) {
 			return Bool(true), nil
 		}
 	}
