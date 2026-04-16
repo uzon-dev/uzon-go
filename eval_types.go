@@ -413,6 +413,10 @@ func (ev *Evaluator) evalPlus(e *ast.PlusExpr, scope *Scope) (*Value, error) {
 			}
 		}
 		if !found {
+			// §v0.8: new field evaluating to undefined is a runtime error
+			if v.Kind == KindUndefined || isUnresolvedIdent(v) {
+				return nil, fmt.Errorf("plus: new field %q evaluates to undefined", ob.Name)
+			}
 			hasNew = true
 			newFields = append(newFields, Field{Name: ob.Name, Value: v})
 		}

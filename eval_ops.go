@@ -159,28 +159,28 @@ func (ev *Evaluator) evalEquality(left, right *Value, negated bool) (*Value, err
 		right = Undefined()
 	}
 	// §v0.8: untagged union comparison rules
-	if left.Kind == KindUnion || right.Kind == KindUnion {
-		if left.Kind == KindUnion && right.Kind == KindUnion {
-			// Same union type → compare inner values; different runtime type → false
-			if left.Union.Inner.Kind != right.Union.Inner.Kind {
-				if negated {
-					return Bool(true), nil
-				}
-				return Bool(false), nil
-			}
-			eq := valuesEqual(left.Union.Inner, right.Union.Inner)
-			if negated {
-				return Bool(!eq), nil
-			}
-			return Bool(eq), nil
+	if left.Kind == KindUnion && right.Kind == KindUnion {
+		// Different member type sets → type error
+		if !sameUnionMemberSets(left.Union.MemberTypes, right.Union.MemberTypes) {
+			return nil, typeErrorf("cannot compare unions with different member types")
 		}
-		// Different types (union vs non-union) → type error
-		return nil, typeErrorf("cannot compare union with %s", func() ValueKind {
-			if left.Kind == KindUnion {
-				return right.Kind
-			}
-			return left.Kind
-		}())
+		// Same union type, different runtime type → false
+		if left.Union.Inner.Kind != right.Union.Inner.Kind {
+			return Bool(negated), nil
+		}
+		// Same runtime type → deep value comparison
+		eq := valuesEqual(left.Union.Inner, right.Union.Inner)
+		if negated {
+			return Bool(!eq), nil
+		}
+		return Bool(eq), nil
+	}
+	// Union vs non-union: transparent — unwrap union
+	if left.Kind == KindUnion {
+		left = left.Union.Inner
+	}
+	if right.Kind == KindUnion {
+		right = right.Union.Inner
 	}
 	// null and undefined are comparable with any type
 	if left.Kind == KindNull || left.Kind == KindUndefined ||
@@ -877,6 +877,24 @@ func adoptNamedType(result, other *Value) {
 	if result.Kind == KindNull && result.Type == nil && other.Type != nil && other.Type.Name != "" {
 		result.Type = other.Type
 	}
+}
+
+// sameUnionMemberSets checks if two union member type sets are structurally
+// equivalent (order irrelevant). §v0.8: anonymous unions use structural identity.
+func sameUnionMemberSets(a, b []*TypeInfo) bool {
+	if len(a) != len(b) {
+		return false
+	}
+	aKeys := make(map[string]bool, len(a))
+	for _, t := range a {
+		aKeys[t.TypeKey()] = true
+	}
+	for _, t := range b {
+		if !aKeys[t.TypeKey()] {
+			return false
+		}
+	}
+	return true
 }
 
 // unionHasMemberType checks if a type is among the union's declared member types.
