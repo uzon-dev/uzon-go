@@ -721,6 +721,11 @@ func (ev *Evaluator) evalStructImport(e *ast.StructImportExpr) (*Value, error) {
 		path = filepath.Join(ev.baseDir, path)
 	}
 	path = filepath.Clean(path)
+	// Normalize via EvalSymlinks so different relative paths to the same file
+	// are detected as circular imports.
+	if real, err := filepath.EvalSymlinks(path); err == nil {
+		path = real
+	}
 
 	if cached, ok := ev.imported[path]; ok {
 		return cached, nil

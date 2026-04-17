@@ -92,6 +92,7 @@ func (p *Parser) parseFunctionExpr() Expr {
 
 	var params []*ParamExpr
 	seenDefault := false
+	seenNames := map[string]bool{}
 	if !p.at(token.Returns) {
 		for {
 			pPos := p.cur.Pos
@@ -99,6 +100,10 @@ func (p *Parser) parseFunctionExpr() Expr {
 			if pName == "" {
 				break
 			}
+			if seenNames[pName] {
+				p.errorf(pPos, "duplicate parameter name %q", pName)
+			}
+			seenNames[pName] = true
 			p.expect(token.As)
 			pType := p.parseTypeExpr()
 			var pDefault Expr

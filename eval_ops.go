@@ -20,6 +20,25 @@ func isUnresolvedIdent(v *Value) bool {
 	return v != nil && v.Type != nil && v.Type.Name == "__ident__"
 }
 
+// checkUndefinedOperands returns a PosError pointing to the undefined
+// operand(s) in a binary expression, so error locations reference the source of
+// the undefined value (e.g. "price") rather than the operator (e.g. "*").
+func checkUndefinedOperands(e *ast.BinaryExpr, left, right *Value) error {
+	leftUndef := left.Kind == KindUndefined || isUnresolvedIdent(left)
+	rightUndef := right.Kind == KindUndefined || isUnresolvedIdent(right)
+	if leftUndef && rightUndef {
+		return &PosError{Pos: e.Left.Pos(), Msg: "undefined value in expression",
+			Cause: &PosError{Pos: e.Right.Pos(), Msg: "undefined value in expression"}}
+	}
+	if leftUndef {
+		return &PosError{Pos: e.Left.Pos(), Msg: "undefined value in expression"}
+	}
+	if rightUndef {
+		return &PosError{Pos: e.Right.Pos(), Msg: "undefined value in expression"}
+	}
+	return nil
+}
+
 // promoteIntToFloat promotes an adoptable integer literal to a float value.
 // §5: "An integer literal may also adopt a float type when combined with a
 // float operand. This cross-category promotion applies only from integer
@@ -62,12 +81,24 @@ func (ev *Evaluator) evalBinary(e *ast.BinaryExpr, scope *Scope) (*Value, error)
 	case token.In:
 		return ev.evalIn(left, right)
 	case token.Plus, token.Minus, token.Star, token.Slash, token.Percent, token.Caret:
+		if err := checkUndefinedOperands(e, left, right); err != nil {
+			return nil, err
+		}
 		return ev.evalArithmetic(e.Op, left, right)
 	case token.PlusPlus:
+		if err := checkUndefinedOperands(e, left, right); err != nil {
+			return nil, err
+		}
 		return ev.evalConcat(left, right)
 	case token.StarStar:
+		if err := checkUndefinedOperands(e, left, right); err != nil {
+			return nil, err
+		}
 		return ev.evalRepeat(left, right)
 	case token.Lt, token.LtEq, token.Gt, token.GtEq:
+		if err := checkUndefinedOperands(e, left, right); err != nil {
+			return nil, err
+		}
 		return ev.evalComparison(e.Op, left, right)
 	default:
 		return nil, fmt.Errorf("unknown binary operator: %v", e.Op)
@@ -1163,6 +1194,10 @@ func (ev *Evaluator) evalCase(e *ast.CaseExpr, scope *Scope) (*Value, error) {
 				matched = ev.valueMatchesType(scrutinee, ti)
 			}
 		case "named":
+			// §5.10: undefined cannot be used as a when value
+			if w.VariantName == "undefined" {
+				return nil, typeErrorf("'when undefined' is not allowed in case expressions")
+			}
 			// Variant dispatch: match tagged union's tag
 			// §5.10: validate variant name against tagged union's variant list
 			variantValid := false
