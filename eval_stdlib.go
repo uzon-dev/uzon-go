@@ -232,6 +232,10 @@ func (ev *Evaluator) stdMap(evalArgs func() ([]*Value, error)) (*Value, error) {
 	if fn.Kind != KindFunction {
 		return nil, typeErrorf("std.map: second argument must be function")
 	}
+	// §5.16.4: std.map requires a 1-parameter function.
+	if len(fn.Function.Params) != 1 {
+		return nil, typeErrorf("std.map: function must take 1 parameter, got %d", len(fn.Function.Params))
+	}
 	var results []*Value
 	for _, elem := range list.List.Elements {
 		r, err := ev.callFunction(fn, []*Value{elem})
@@ -257,6 +261,9 @@ func (ev *Evaluator) stdFilter(evalArgs func() ([]*Value, error)) (*Value, error
 	}
 	if fn.Kind != KindFunction {
 		return nil, typeErrorf("std.filter: second argument must be function")
+	}
+	if len(fn.Function.Params) != 1 {
+		return nil, typeErrorf("std.filter: function must take 1 parameter, got %d", len(fn.Function.Params))
 	}
 	if fn.Function.ReturnType != nil && fn.Function.ReturnType.BaseType != "bool" {
 		return nil, fmt.Errorf("std.filter: function must return bool, got %s", fn.Function.ReturnType.BaseType)
@@ -291,6 +298,9 @@ func (ev *Evaluator) stdReduce(evalArgs func() ([]*Value, error)) (*Value, error
 	}
 	if fn.Kind != KindFunction {
 		return nil, typeErrorf("std.reduce: third argument must be function")
+	}
+	if len(fn.Function.Params) != 2 {
+		return nil, typeErrorf("std.reduce: function must take 2 parameters, got %d", len(fn.Function.Params))
 	}
 	// §5.16.2: initial value type must match function return type
 	if fn.Kind == KindFunction && fn.Function.ReturnType != nil {
