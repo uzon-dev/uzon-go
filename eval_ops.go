@@ -118,6 +118,14 @@ func (ev *Evaluator) evalOrElse(e *ast.BinaryExpr, scope *Scope) (*Value, error)
 		if err != nil {
 			return nil, err
 		}
+		// §5.7: validate type compatibility even when left is undefined,
+		// using any type info propagated through `to` / annotations.
+		if left.Kind == KindUndefined && left.Type != nil && left.Type.BaseType != "" &&
+			right.Kind != KindUndefined && right.Kind != KindNull && !isUnresolvedIdent(right) {
+			if !leftTypeMatchesRightKind(left.Type, right) {
+				return nil, typeErrorf("or else type mismatch: %s and %s", left.Type.BaseType, right.Kind)
+			}
+		}
 		return right, nil
 	}
 	// Left is defined — speculatively evaluate right for type checking
@@ -650,6 +658,10 @@ func (ev *Evaluator) floatArith(op token.Type, left, right *Value, ti *TypeInfo)
 	case token.Caret:
 		af, _ := a.Float64()
 		bf, _ := b.Float64()
+		// §5.3: negative base with non-integer exponent is a runtime error.
+		if af < 0 && bf != math.Trunc(bf) && !math.IsInf(bf, 0) && !math.IsNaN(bf) {
+			return nil, fmt.Errorf("negative base with non-integer exponent (%g ^ %g) is undefined in real numbers", af, bf)
+		}
 		result := math.Pow(af, bf)
 		if math.IsNaN(result) {
 			return nanResult(), nil
@@ -796,7 +808,13 @@ func (ev *Evaluator) evalUnary(e *ast.UnaryExpr, scope *Scope) (*Value, error) {
 	switch e.Op {
 	case token.Minus:
 		if operand.Kind == KindInt {
-			return &Value{Kind: KindInt, Int: new(big.Int).Neg(operand.Int), Type: operand.Type}, nil
+			negated := new(big.Int).Neg(operand.Int)
+			if operand.Type != nil && operand.Type.BitSize > 0 && isIntegerType(operand.Type.BaseType) {
+				if err := checkIntRange(negated, operand.Type.BitSize, operand.Type.Signed); err != nil {
+					return nil, fmt.Errorf("unary negation: %w", err)
+				}
+			}
+			return &Value{Kind: KindInt, Int: negated, Type: operand.Type, Adoptable: operand.Adoptable}, nil
 		}
 		if operand.Kind == KindFloat {
 			if operand.FloatIsNaN {
@@ -883,6 +901,32 @@ func branchTypesCompatible(a, b *Value) bool {
 		return true
 	}
 	return false
+}
+
+// leftTypeMatchesRightKind checks whether a left-hand TypeInfo (typically
+// propagated through `to`) is compatible with a right-hand value's Kind.
+// Used by `or else` to validate type compatibility when the left side is
+// undefined but still carries type information.
+func leftTypeMatchesRightKind(lt *TypeInfo, right *Value) bool {
+	if right.Adoptable {
+		if (isIntegerType(lt.BaseType) || isFloatType(lt.BaseType)) &&
+			(right.Kind == KindInt || right.Kind == KindFloat) {
+			return true
+		}
+	}
+	switch {
+	case isIntegerType(lt.BaseType):
+		return right.Kind == KindInt
+	case isFloatType(lt.BaseType):
+		return right.Kind == KindFloat
+	case lt.BaseType == "string":
+		return right.Kind == KindString
+	case lt.BaseType == "bool":
+		return right.Kind == KindBool
+	case lt.BaseType == "null":
+		return right.Kind == KindNull
+	}
+	return true
 }
 
 // operandTypesCompatible checks if two values have compatible types for operators

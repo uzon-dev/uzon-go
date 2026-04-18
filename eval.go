@@ -483,6 +483,14 @@ func (ev *Evaluator) evalExprSwitch(expr ast.Expr, scope *Scope) (*Value, error)
 		return ev.evalOf(e, scope)
 	case *ast.StructImportExpr:
 		return ev.evalStructImport(e)
+	case *ast.EnumDeclExpr:
+		return ev.evalEnumDecl(e)
+	case *ast.UnionDeclExpr:
+		return ev.evalUnionDecl(e)
+	case *ast.TaggedUnionDeclExpr:
+		return ev.evalTaggedUnionDecl(e, scope)
+	case *ast.StructDeclExpr:
+		return ev.evalStructDecl(e, scope)
 	case *ast.FunctionExpr:
 		return ev.evalFunctionDef(e, scope)
 	case *ast.AreExpr:

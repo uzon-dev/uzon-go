@@ -67,13 +67,20 @@ func (p *Parser) parseCaseExpr() Expr {
 	return &CaseExpr{Mode: mode, Scrutinee: scrutinee, Whens: whens, Else: els, Position: pos}
 }
 
-// parseStructImport parses 'struct "path"' (§7).
+// parseStructImport parses 'struct "path"' (§7) or 'struct { ... }' (§3.2, §6.2).
 // §v0.8: interpolation is forbidden in struct import paths.
 func (p *Parser) parseStructImport() Expr {
 	pos := p.cur.Pos
 	p.expect(token.Struct)
+	// Standalone struct type declaration: struct { fields... } (§3.2, §6.2).
+	if p.at(token.LBrace) {
+		p.advance()
+		fields := p.parseBindings(token.RBrace)
+		p.expect(token.RBrace)
+		return &StructDeclExpr{Fields: fields, Position: pos}
+	}
 	if !p.at(token.StringLit) {
-		p.errorf(p.cur.Pos, "expected string path after 'struct', got %v", p.cur.Type)
+		p.errorf(p.cur.Pos, "expected string path or struct literal after 'struct', got %v", p.cur.Type)
 		return &StructImportExpr{Position: pos}
 	}
 	path := p.cur.Literal
@@ -82,6 +89,98 @@ func (p *Parser) parseStructImport() Expr {
 	}
 	p.advance()
 	return &StructImportExpr{Path: path, Position: pos}
+}
+
+// parseEnumDecl parses 'enum variant, variant, ...' (§3.5, §6.2).
+func (p *Parser) parseEnumDecl() Expr {
+	pos := p.cur.Pos
+	p.expect(token.Enum)
+	var variants []string
+	first := p.parseNameOrKeyword()
+	if first == "" {
+		p.errorf(p.cur.Pos, "expected enum variant name, got %v", p.cur.Type)
+		return &EnumDeclExpr{Position: pos}
+	}
+	variants = append(variants, first)
+	for p.match(token.Comma) {
+		if p.isBindingStart() || p.at(token.RBrace) || p.at(token.RParen) ||
+			p.at(token.RBrack) || p.at(token.EOF) || p.at(token.Called) {
+			break
+		}
+		variants = append(variants, p.parseNameOrKeyword())
+	}
+	if len(variants) < 2 {
+		p.errorf(pos, "enum declaration requires at least two variants (§3.5)")
+	}
+	seen := map[string]bool{}
+	for _, v := range variants {
+		if seen[v] {
+			p.errorf(pos, "duplicate enum variant %q", v)
+		}
+		seen[v] = true
+	}
+	return &EnumDeclExpr{Variants: variants, Position: pos}
+}
+
+// parseUnionDecl parses 'union Type, Type, ...' (§3.6, §6.2).
+func (p *Parser) parseUnionDecl() Expr {
+	pos := p.cur.Pos
+	p.expect(token.Union)
+	var types []*TypeExpr
+	types = append(types, p.parseTypeExpr())
+	for p.match(token.Comma) {
+		if p.isBindingStart() || p.at(token.RBrace) || p.at(token.RParen) ||
+			p.at(token.RBrack) || p.at(token.EOF) || p.at(token.Called) {
+			break
+		}
+		types = append(types, p.parseTypeExpr())
+	}
+	if len(types) < 2 {
+		p.errorf(pos, "union declaration requires at least two member types (§3.6)")
+	}
+	return &UnionDeclExpr{MemberTypes: types, Position: pos}
+}
+
+// parseTaggedUnionDecl parses 'tagged union variant as Type, ...' (§3.7, §6.2).
+func (p *Parser) parseTaggedUnionDecl() Expr {
+	pos := p.cur.Pos
+	p.expect(token.Tagged)
+	if !p.at(token.Union) {
+		p.errorf(p.cur.Pos, "expected 'union' after 'tagged', got %v (%q)", p.cur.Type, p.cur.Literal)
+		return &TaggedUnionDeclExpr{Position: pos}
+	}
+	p.advance()
+
+	var variants []*TaggedVariantExpr
+	for {
+		vPos := p.cur.Pos
+		vName := p.parseNameOrKeyword()
+		if vName == "" {
+			p.errorf(vPos, "expected tagged union variant name, got %v", p.cur.Type)
+			break
+		}
+		p.expect(token.As)
+		vType := p.parseTypeExpr()
+		variants = append(variants, &TaggedVariantExpr{Name: vName, TypeExpr: vType, Position: vPos})
+		if !p.match(token.Comma) {
+			break
+		}
+		if p.isBindingStart() || p.at(token.RBrace) || p.at(token.RParen) ||
+			p.at(token.RBrack) || p.at(token.EOF) || p.at(token.Called) {
+			break
+		}
+	}
+	if len(variants) < 2 {
+		p.errorf(pos, "tagged union declaration requires at least two variants (§3.7)")
+	}
+	seen := map[string]bool{}
+	for _, v := range variants {
+		if seen[v.Name] {
+			p.errorf(pos, "duplicate tagged union variant %q", v.Name)
+		}
+		seen[v.Name] = true
+	}
+	return &TaggedUnionDeclExpr{Variants: variants, Position: pos}
 }
 
 // parseFunctionExpr parses a function definition (§3.8):

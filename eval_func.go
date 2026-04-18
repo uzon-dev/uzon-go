@@ -13,6 +13,12 @@ import (
 // --- Functions ---
 
 func (ev *Evaluator) evalFunctionDef(e *ast.FunctionExpr, scope *Scope) (*Value, error) {
+	// §3.8: collect parameter names for default-expr cross-reference check.
+	paramNames := make(map[string]bool, len(e.Params))
+	for _, p := range e.Params {
+		paramNames[p.Name] = true
+	}
+
 	var params []FuncParam
 	for _, p := range e.Params {
 		ti := ev.resolveTypeExpr(p.TypeExpr)
@@ -21,6 +27,41 @@ func (ev *Evaluator) evalFunctionDef(e *ast.FunctionExpr, scope *Scope) (*Value,
 			if _, ok := ev.types.get(p.TypeExpr.Path); !ok {
 				if parseBuiltinType(ti.Name) == nil {
 					return nil, typeErrorf("unknown type %q", ti.Name)
+				}
+			}
+		}
+		// §3.8: validate default value
+		if p.Default != nil {
+			// A default expression MUST NOT reference any parameter (syntax error).
+			refs := collectBindingDeps(p.Default)
+			for ref := range refs {
+				if paramNames[ref] {
+					return nil, fmt.Errorf("parameter %q default value references parameter %q (parameters are not in scope until the function body)", p.Name, ref)
+				}
+			}
+			// Evaluate default in the enclosing scope.
+			dv, err := ev.evalExpr(p.Default, scope)
+			if err != nil {
+				return nil, err
+			}
+			// undefined is not permitted as a default value.
+			if dv.Kind == KindUndefined || isUnresolvedIdent(dv) {
+				return nil, fmt.Errorf("parameter %q default value is undefined", p.Name)
+			}
+			// Default value type MUST match parameter's declared type.
+			if ti != nil && ti.BaseType != "" {
+				if dv.Adoptable && (dv.Kind == KindInt || dv.Kind == KindFloat) {
+					if dv.Kind == KindInt && isIntegerType(ti.BaseType) {
+						if err := checkIntRange(dv.Int, ti.BitSize, ti.Signed); err != nil {
+							return nil, fmt.Errorf("parameter %q default: %w", p.Name, err)
+						}
+					} else if !((dv.Kind == KindInt && isIntegerType(ti.BaseType)) ||
+						(dv.Kind == KindFloat && isFloatType(ti.BaseType)) ||
+						(dv.Kind == KindInt && isFloatType(ti.BaseType))) {
+						return nil, typeErrorf("parameter %q default: expected %s, got %s", p.Name, ti.BaseType, dv.Kind)
+					}
+				} else if !argTypeCompatible(dv, ti) {
+					return nil, typeErrorf("parameter %q default: expected %s, got %s", p.Name, ti.BaseType, dv.Kind)
 				}
 			}
 		}
@@ -313,6 +354,10 @@ func walkExpr(expr ast.Expr, visit func(ast.Expr)) {
 	case *ast.AreExpr:
 		for _, el := range e.Elements {
 			walkExpr(el, visit)
+		}
+	case *ast.StructDeclExpr:
+		for _, b := range e.Fields {
+			walkExpr(b.Value, visit)
 		}
 	case *ast.InterpolatedStringExpr:
 		for _, p := range e.Parts {

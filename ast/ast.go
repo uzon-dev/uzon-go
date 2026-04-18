@@ -338,6 +338,53 @@ func (e *StructImportExpr) Pos() token.Pos { return e.Position }
 func (e *StructImportExpr) nodeTag()       {}
 func (e *StructImportExpr) exprTag()       {}
 
+// EnumDeclExpr represents a standalone enum type declaration (§3.5, §6.2):
+// "X is enum red, green, blue". The binding name becomes the type name and the
+// default value is the first variant. `called` is forbidden alongside this form.
+type EnumDeclExpr struct {
+	Variants []string
+	Position token.Pos
+}
+
+func (e *EnumDeclExpr) Pos() token.Pos { return e.Position }
+func (e *EnumDeclExpr) nodeTag()       {}
+func (e *EnumDeclExpr) exprTag()       {}
+
+// UnionDeclExpr represents a standalone union type declaration (§3.6, §6.2):
+// "X is union i32, string". The binding name becomes the type name and the
+// default value is the default of the first member type.
+type UnionDeclExpr struct {
+	MemberTypes []*TypeExpr
+	Position    token.Pos
+}
+
+func (e *UnionDeclExpr) Pos() token.Pos { return e.Position }
+func (e *UnionDeclExpr) nodeTag()       {}
+func (e *UnionDeclExpr) exprTag()       {}
+
+// TaggedUnionDeclExpr represents a standalone tagged union declaration (§3.7, §6.2):
+// "X is tagged union ok as i32, err as string". The binding name becomes the type name
+// and the default value is the first variant's default with the first variant's tag.
+type TaggedUnionDeclExpr struct {
+	Variants []*TaggedVariantExpr
+	Position token.Pos
+}
+
+func (e *TaggedUnionDeclExpr) Pos() token.Pos { return e.Position }
+func (e *TaggedUnionDeclExpr) nodeTag()       {}
+func (e *TaggedUnionDeclExpr) exprTag()       {}
+
+// StructDeclExpr represents a standalone struct type declaration (§3.2, §6.2):
+// "X is struct { x is 0, y is 0 }". The binding name becomes the type name.
+type StructDeclExpr struct {
+	Fields   []*Binding
+	Position token.Pos
+}
+
+func (e *StructDeclExpr) Pos() token.Pos { return e.Position }
+func (e *StructDeclExpr) nodeTag()       {}
+func (e *StructDeclExpr) exprTag()       {}
+
 // FunctionExpr represents a function definition (§3.8).
 type FunctionExpr struct {
 	Params     []*ParamExpr

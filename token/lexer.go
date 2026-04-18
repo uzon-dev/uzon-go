@@ -30,6 +30,29 @@ type Lexer struct {
 	// peeked holds a lookahead buffer for composite operator detection
 	// and the Peek method.
 	peeked []Token
+
+	// errors collects lexical errors (unterminated strings, invalid escapes).
+	errors []LexError
+}
+
+// LexError records a lexical error with its source position.
+type LexError struct {
+	Pos Pos
+	Msg string
+}
+
+func (e LexError) Error() string {
+	return e.Pos.String() + ": " + e.Msg
+}
+
+// Errors returns all lexical errors accumulated so far.
+func (l *Lexer) Errors() []LexError {
+	return l.errors
+}
+
+// errorf records a lexical error at the given position.
+func (l *Lexer) errorf(pos Pos, format string, args ...interface{}) {
+	l.errors = append(l.errors, LexError{Pos: pos, Msg: sprintf(format, args...)})
 }
 
 // NewLexer creates a new Lexer for the given source.

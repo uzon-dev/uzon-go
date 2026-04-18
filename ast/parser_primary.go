@@ -58,6 +58,15 @@ func (p *Parser) parsePrimary() Expr {
 	case token.Struct:
 		return p.parseStructImport()
 
+	case token.Enum:
+		return p.parseEnumDecl()
+
+	case token.Union:
+		return p.parseUnionDecl()
+
+	case token.Tagged:
+		return p.parseTaggedUnionDecl()
+
 	case token.Function:
 		return p.parseFunctionExpr()
 
@@ -87,16 +96,30 @@ func (p *Parser) parsePrimary() Expr {
 
 // parseStringOrInterpolation handles string literals, multiline
 // string concatenation, and string interpolation.
+// §4.4.2: strings MUST appear on immediately adjacent physical lines —
+// blank lines or comment-only lines between strings break the sequence.
 func (p *Parser) parseStringOrInterpolation() Expr {
 	pos := p.cur.Pos
 	raw := p.cur.Literal
+	prevLine := p.prev.Pos.Line
+	if prevLine == 0 {
+		prevLine = pos.Line
+	} else {
+		prevLine = pos.Line
+	}
 	p.advance()
 
 	// Consecutive string literals form a multiline string (unless suppressed).
+	// Per §4.4.2: must be on immediately adjacent physical lines, with no
+	// intervening blank or comment-only lines.
 	var lines []string
 	lines = append(lines, raw)
 	if !p.noStringConcat {
 		for p.at(token.StringLit) && !p.isBindingStart() {
+			if p.cur.Pos.Line != prevLine+1 {
+				break // not on the immediately next physical line
+			}
+			prevLine = p.cur.Pos.Line
 			lines = append(lines, p.cur.Literal)
 			p.advance()
 		}

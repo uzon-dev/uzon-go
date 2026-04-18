@@ -21,9 +21,11 @@ import (
 func (l *Lexer) scanString(pos Pos) Token {
 	var sb strings.Builder
 	l.advance() // consume opening "
+	startLine := pos.Line
 
 	for l.ch >= 0 && l.ch != '"' {
 		if l.ch == '\\' {
+			escPos := l.curPos()
 			l.advance()
 			switch l.ch {
 			case '"':
@@ -45,17 +47,20 @@ func (l *Lexer) scanString(pos Pos) Token {
 				l.advance()
 				h1, ok1 := safeHexVal(l.ch)
 				if !ok1 {
+					l.errorf(escPos, "invalid \\x escape: requires two hex digits")
 					sb.WriteRune(unicode.ReplacementChar)
 					continue // don't consume non-hex char
 				}
 				l.advance()
 				h2, ok2 := safeHexVal(l.ch)
 				if !ok2 {
+					l.errorf(escPos, "invalid \\x escape: requires two hex digits")
 					sb.WriteRune(unicode.ReplacementChar)
 					continue // don't consume non-hex char
 				}
 				val := h1<<4 | h2
 				if val > 0x7F {
+					l.errorf(escPos, "\\x escape value 0x%x out of range (0x00-0x7F)", val)
 					sb.WriteRune(unicode.ReplacementChar)
 				} else {
 					sb.WriteByte(byte(val))
@@ -63,32 +68,50 @@ func (l *Lexer) scanString(pos Pos) Token {
 			case 'u':
 				// \u{HHHHHH} — 1–6 hex digits, valid Unicode scalar value.
 				l.advance() // consume '{'
+				if l.ch != '{' {
+					l.errorf(escPos, "invalid \\u escape: expected '{'")
+					sb.WriteRune(unicode.ReplacementChar)
+					continue
+				}
 				var code rune
 				digits := 0
+				badDigit := false
 				l.advance()
 				for l.ch != '}' && l.ch >= 0 {
 					hv, ok := safeHexVal(l.ch)
 					if !ok {
-						code = unicode.ReplacementChar
+						badDigit = true
 					} else {
 						code = code*16 + rune(hv)
 					}
 					digits++
 					l.advance()
 				}
-				if digits < 1 || digits > 6 || code > 0x10FFFF || (code >= 0xD800 && code <= 0xDFFF) {
+				if badDigit {
+					l.errorf(escPos, "invalid \\u escape: non-hex digit")
+					sb.WriteRune(unicode.ReplacementChar)
+				} else if digits < 1 || digits > 6 {
+					l.errorf(escPos, "invalid \\u escape: must have 1-6 hex digits")
+					sb.WriteRune(unicode.ReplacementChar)
+				} else if code > 0x10FFFF {
+					l.errorf(escPos, "\\u escape value 0x%x out of Unicode range (max 0x10FFFF)", code)
+					sb.WriteRune(unicode.ReplacementChar)
+				} else if code >= 0xD800 && code <= 0xDFFF {
+					l.errorf(escPos, "\\u escape value 0x%x is a surrogate (forbidden)", code)
 					sb.WriteRune(unicode.ReplacementChar)
 				} else {
 					sb.WriteRune(code)
 				}
 			default:
-				// Unrecognized escape — preserve literally.
+				// Unrecognized escape — record error and preserve literally.
+				l.errorf(escPos, "invalid escape sequence \\%c", l.ch)
 				sb.WriteByte('\\')
 				sb.WriteRune(l.ch)
 			}
 		} else if l.ch == '{' {
 			// String interpolation: track brace depth and consume the full
 			// expression including any nested "..." strings (§4.4.1).
+			interpPos := l.curPos()
 			sb.WriteRune(l.ch)
 			l.advance()
 			depth := 1
@@ -146,6 +169,9 @@ func (l *Lexer) scanString(pos Pos) Token {
 					l.advance()
 				}
 			}
+			if depth > 0 {
+				l.errorf(interpPos, "unterminated string interpolation")
+			}
 		} else {
 			sb.WriteRune(l.ch)
 		}
@@ -154,6 +180,8 @@ func (l *Lexer) scanString(pos Pos) Token {
 
 	if l.ch == '"' {
 		l.advance() // consume closing "
+	} else {
+		l.errorf(pos, "unterminated string literal starting at line %d", startLine)
 	}
 
 	return Token{Type: StringLit, Literal: sb.String(), Pos: pos}
@@ -161,6 +189,8 @@ func (l *Lexer) scanString(pos Pos) Token {
 
 // scanQuotedIdent scans a single-quoted identifier ('Content-Type').
 // Per §2.3, if the unquoted content is a keyword, it remains a keyword.
+// A quoted identifier MUST be closed by ' on the same physical line —
+// a newline or EOF before the closing ' is a syntax error (§2.3).
 func (l *Lexer) scanQuotedIdent(pos Pos) Token {
 	l.advance() // consume opening '
 	var sb strings.Builder
@@ -170,6 +200,8 @@ func (l *Lexer) scanQuotedIdent(pos Pos) Token {
 	}
 	if l.ch == '\'' {
 		l.advance() // consume closing '
+	} else {
+		l.errorf(pos, "unterminated quoted identifier")
 	}
 	name := sb.String()
 	if tt, ok := Keywords[name]; ok {
@@ -180,9 +212,12 @@ func (l *Lexer) scanQuotedIdent(pos Pos) Token {
 
 // scanKeywordEscape scans an @-prefixed keyword escape (@is → Ident "is").
 // Per §2.4, @keyword forces the keyword to be treated as an identifier.
+// @ MUST be immediately followed by a keyword (no space). Failure is
+// a syntax error.
 func (l *Lexer) scanKeywordEscape(pos Pos) Token {
 	l.advance() // consume @
 	if !isIdentStart(l.ch) {
+		l.errorf(pos, "@ must be immediately followed by a keyword (no space)")
 		return Token{Type: At, Literal: "@", Pos: pos}
 	}
 	start := l.pos - l.chSize
@@ -190,6 +225,9 @@ func (l *Lexer) scanKeywordEscape(pos Pos) Token {
 		l.advance()
 	}
 	name := string(l.src[start:l.litEnd()])
+	if !IsKeyword(name) {
+		l.errorf(pos, "@%s: %q is not a keyword (only keywords may be escaped)", name, name)
+	}
 	return Token{Type: Ident, Literal: name, Pos: pos}
 }
 

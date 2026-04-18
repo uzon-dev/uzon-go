@@ -43,6 +43,11 @@ func (ev *Evaluator) evalLiteral(e *ast.LiteralExpr) (*Value, error) {
 		if !ok {
 			return nil, fmt.Errorf("invalid integer literal: %s", e.Token.Literal)
 		}
+		// §3.1: integer literals default to i64. Check range so that values
+		// that cannot fit as i64 are rejected unless explicitly typed larger.
+		if err := checkIntRange(n, 64, true); err != nil {
+			return nil, fmt.Errorf("integer literal %s: %w", e.Token.Literal, err)
+		}
 		return &Value{Kind: KindInt, Int: n, Type: &TypeInfo{BaseType: "i64", BitSize: 64, Signed: true}, Adoptable: true}, nil
 
 	case token.FloatLit:

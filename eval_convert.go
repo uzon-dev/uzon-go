@@ -34,7 +34,11 @@ func (ev *Evaluator) evalTo(e *ast.ToExpr, scope *Scope) (*Value, error) {
 				return nil, typeErrorf("cannot convert string to null")
 			}
 		}
-		return Undefined(), nil
+		// Propagate target type so downstream consumers (e.g. `or else`)
+		// can still validate type compatibility (§5.7).
+		u := Undefined()
+		u.Type = ti
+		return u, nil
 	}
 
 	// §5.11: "to bool" only allows identity (bool to bool) — type error for all others.

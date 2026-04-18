@@ -83,9 +83,50 @@ func (ev *Evaluator) evalList(e *ast.ListExpr, scope *Scope) (*Value, error) {
 				}
 			}
 			if baseKind != 0 {
-				for i, el := range elems {
-					if el.Kind != baseKind && el.Kind != KindNull {
-						return nil, fmt.Errorf("list elements must be same type: got %s and %s at index %d", baseKind, el.Kind, i)
+				// §3.4: integer-to-float promotion applies in lists —
+				// `[1, 2.0]` is valid because untyped int literals adopt float.
+				promotable := (baseKind == KindInt || baseKind == KindFloat)
+				if promotable {
+					for _, el := range elems {
+						if el.Kind == KindNull {
+							continue
+						}
+						if el.Kind != KindInt && el.Kind != KindFloat {
+							promotable = false
+							break
+						}
+						if el.Kind == KindInt && !el.Adoptable {
+							promotable = false
+							break
+						}
+					}
+				}
+				if !promotable {
+					for i, el := range elems {
+						if el.Kind != baseKind && el.Kind != KindNull {
+							return nil, fmt.Errorf("list elements must be same type: got %s and %s at index %d", baseKind, el.Kind, i)
+						}
+					}
+				}
+				// §3.4: numeric elements with explicit (non-adoptable) type
+				// annotations must agree on width/signedness.
+				if baseKind == KindInt || baseKind == KindFloat {
+					var refTi *TypeInfo
+					for _, el := range elems {
+						if el.Type != nil && el.Type.BaseType != "" && !el.Adoptable {
+							refTi = el.Type
+							break
+						}
+					}
+					if refTi != nil {
+						for i, el := range elems {
+							if el.Type == nil || el.Type.BaseType == "" || el.Adoptable {
+								continue
+							}
+							if el.Type.BaseType != refTi.BaseType {
+								return nil, typeErrorf("list elements must be same type: %s and %s at index %d", refTi.BaseType, el.Type.BaseType, i)
+							}
+						}
 					}
 				}
 				// §3.4: struct elements must have compatible shapes and nominal types
@@ -212,8 +253,22 @@ func (ev *Evaluator) evalAs(e *ast.AsExpr, scope *Scope) (*Value, error) {
 		}
 	}
 
+	// §3.2.1 rule 5 / §6.2: nominal identity for enums — an enum value
+	// already belonging to a named enum type cannot be annotated as a
+	// different named enum, even if variants overlap structurally.
+	if val.Kind == KindEnum && ti.Name != "" && val.Type != nil && val.Type.Name != "" && val.Type.Name != ti.Name {
+		if _, ok := ev.enums.get(ti.Name); ok {
+			return nil, typeErrorf("cannot annotate enum of named type %q as %q (nominal identity)", val.Type.Name, ti.Name)
+		}
+	}
+
 	// §6.3: struct shape and type compatibility
 	if val.Kind == KindStruct && ti.Name != "" {
+		// §3.2.1 rule 5 / §6.2: nominal identity. If the value already has
+		// a different named type, the assertion is a type error.
+		if val.Type != nil && val.Type.Name != "" && val.Type.Name != ti.Name {
+			return nil, typeErrorf("cannot annotate value of named type %q as %q (nominal identity)", val.Type.Name, ti.Name)
+		}
 		if expectedFields, ok := ev.structShapes[ti.Name]; ok {
 			if len(val.Struct.Fields) != len(expectedFields) {
 				return nil, fmt.Errorf("cannot cast struct to %s: different shape (%d fields vs %d)",
@@ -224,10 +279,25 @@ func (ev *Evaluator) evalAs(e *ast.AsExpr, scope *Scope) (*Value, error) {
 				if actual == nil {
 					return nil, fmt.Errorf("cannot cast struct to %s: missing field %q", ti.Name, ef.Name)
 				}
+				// §6.3: untyped literals adopt the expected field type and are range-checked.
+				if actual.Adoptable && ef.Value.Type != nil && ef.Value.Type.BaseType != "" {
+					if actual.Kind == KindInt && isIntegerType(ef.Value.Type.BaseType) && ef.Value.Type.BitSize > 0 {
+						if err := checkIntRange(actual.Int, ef.Value.Type.BitSize, ef.Value.Type.Signed); err != nil {
+							return nil, fmt.Errorf("as %s: field %q: %w", ti.Name, ef.Name, err)
+						}
+						actual.Type = ef.Value.Type
+						actual.Adoptable = false
+					} else if actual.Kind == KindFloat && isFloatType(ef.Value.Type.BaseType) {
+						actual.Type = ef.Value.Type
+						actual.Adoptable = false
+					}
+				}
 				if err := ev.checkWithTypeCompat(ef.Value, actual, ef.Name); err != nil {
 					return nil, fmt.Errorf("as %s: %w", ti.Name, err)
 				}
 			}
+			// Adopt the named type on the value.
+			val.Type = ti
 		}
 	}
 
@@ -235,6 +305,19 @@ func (ev *Evaluator) evalAs(e *ast.AsExpr, scope *Scope) (*Value, error) {
 	if val.Kind == KindList && e.TypeExpr.ListElem != nil {
 		elemTi := ev.resolveTypeExpr(e.TypeExpr.ListElem)
 		if elemTi.Name != "" {
+			// §6.2: element type name must be resolvable.
+			// Builtins are accepted via parseBuiltinType (BaseType is set).
+			if elemTi.BaseType == "" {
+				if _, ok := ev.types.get(e.TypeExpr.ListElem.Path); !ok {
+					if _, ok := ev.enums.get(elemTi.Name); !ok {
+						if _, ok := ev.taggedVariants[elemTi.Name]; !ok {
+							if parseBuiltinType(elemTi.Name) == nil {
+								return nil, typeErrorf("unknown type %q", elemTi.Name)
+							}
+						}
+					}
+				}
+			}
 			variants, enumOK := ev.enums.get(elemTi.Name)
 			if !enumOK && len(e.TypeExpr.ListElem.Path) > 1 {
 				variants, enumOK = ev.resolveEnumFromPath(e.TypeExpr.ListElem.Path, scope)
@@ -292,6 +375,25 @@ func (ev *Evaluator) evalAs(e *ast.AsExpr, scope *Scope) (*Value, error) {
 		return val, nil
 	}
 
+	// §6.1: cross-category annotation (e.g. float as integer, string as integer)
+	// is a type error — use `to` for conversion. Allow null and unresolved idents.
+	if ti.BaseType != "" && val.Kind != KindNull && !isUnresolvedIdent(val) {
+		isIntT := isIntegerType(ti.BaseType)
+		isFloatT := isFloatType(ti.BaseType)
+		isBoolT := ti.BaseType == "bool"
+		isStringT := ti.BaseType == "string"
+		switch {
+		case isIntT && val.Kind != KindInt:
+			return nil, typeErrorf("cannot annotate %s as %s; use 'to %s' for conversion", val.Kind, ti.BaseType, ti.BaseType)
+		case isFloatT && val.Kind != KindFloat && val.Kind != KindInt:
+			return nil, typeErrorf("cannot annotate %s as %s; use 'to %s' for conversion", val.Kind, ti.BaseType, ti.BaseType)
+		case isBoolT && val.Kind != KindBool:
+			return nil, typeErrorf("cannot annotate %s as bool", val.Kind)
+		case isStringT && val.Kind != KindString:
+			return nil, typeErrorf("cannot annotate %s as string; use 'to string' for conversion", val.Kind)
+		}
+	}
+
 	// Numeric range validation for "as" annotation
 	if val.Kind == KindInt && ti.BitSize > 0 && isIntegerType(ti.BaseType) {
 		if err := checkIntRange(val.Int, ti.BitSize, ti.Signed); err != nil {
@@ -343,6 +445,19 @@ func (ev *Evaluator) evalWith(e *ast.WithExpr, scope *Scope) (*Value, error) {
 		found := false
 		for i, f := range newFields {
 			if f.Name == ob.Name {
+				// §3.2.1: untyped literals adopt the existing field type and are range-checked.
+				if v.Adoptable && f.Value.Type != nil && f.Value.Type.BaseType != "" {
+					if v.Kind == KindInt && isIntegerType(f.Value.Type.BaseType) && f.Value.Type.BitSize > 0 {
+						if err := checkIntRange(v.Int, f.Value.Type.BitSize, f.Value.Type.Signed); err != nil {
+							return nil, fmt.Errorf("with: field %q: %w", ob.Name, err)
+						}
+						v.Type = f.Value.Type
+						v.Adoptable = false
+					} else if v.Kind == KindFloat && isFloatType(f.Value.Type.BaseType) {
+						v.Type = f.Value.Type
+						v.Adoptable = false
+					}
+				}
 				if err := ev.checkWithTypeCompat(f.Value, v, ob.Name); err != nil {
 					return nil, fmt.Errorf("with: %w", err)
 				}
@@ -687,6 +802,87 @@ func (ev *Evaluator) evalIsNamed(e *ast.IsNamedExpr, scope *Scope) (*Value, erro
 	return Bool(result), nil
 }
 
+// evalEnumDecl evaluates a standalone enum declaration "enum red, green, blue" (§3.5, §6.2).
+// The default value is the first variant. The binding-level CalledName mechanism
+// then names the type after the binding.
+func (ev *Evaluator) evalEnumDecl(e *ast.EnumDeclExpr) (*Value, error) {
+	if len(e.Variants) < 2 {
+		return nil, fmt.Errorf("enum declaration requires at least 2 variants, got %d", len(e.Variants))
+	}
+	seen := make(map[string]bool, len(e.Variants))
+	for _, v := range e.Variants {
+		if seen[v] {
+			return nil, fmt.Errorf("duplicate variant %q in enum", v)
+		}
+		seen[v] = true
+	}
+	return &Value{Kind: KindEnum, Enum: &EnumValue{Variant: e.Variants[0], Variants: e.Variants}}, nil
+}
+
+// evalUnionDecl evaluates a standalone union declaration "union i32, string" (§3.6, §6.2).
+// The default value is the default of the first member type.
+func (ev *Evaluator) evalUnionDecl(e *ast.UnionDeclExpr) (*Value, error) {
+	if len(e.MemberTypes) < 2 {
+		return nil, typeErrorf("union declaration requires at least 2 member types, got %d", len(e.MemberTypes))
+	}
+	var memberTypes []*TypeInfo
+	seen := make(map[string]bool, len(e.MemberTypes))
+	for _, t := range e.MemberTypes {
+		ti := ev.resolveTypeExpr(t)
+		if ti != nil {
+			key := ti.TypeKey()
+			if key != "" {
+				if seen[key] {
+					return nil, typeErrorf("duplicate type %q in union", key)
+				}
+				seen[key] = true
+			}
+		}
+		memberTypes = append(memberTypes, ti)
+	}
+	inner := zeroValueForType(memberTypes[0])
+	if inner == nil {
+		inner = Undefined()
+	}
+	return &Value{Kind: KindUnion, Union: &UnionValue{Inner: inner, MemberTypes: memberTypes}}, nil
+}
+
+// evalTaggedUnionDecl evaluates "tagged union ok as i32, err as string" (§3.7, §6.2).
+// The default value is the first variant's default tagged with the first variant's name.
+func (ev *Evaluator) evalTaggedUnionDecl(e *ast.TaggedUnionDeclExpr, scope *Scope) (*Value, error) {
+	if len(e.Variants) < 2 {
+		return nil, fmt.Errorf("tagged union declaration requires at least 2 variants, got %d", len(e.Variants))
+	}
+	seen := make(map[string]bool, len(e.Variants))
+	for _, v := range e.Variants {
+		if seen[v.Name] {
+			return nil, fmt.Errorf("duplicate variant %q in tagged union", v.Name)
+		}
+		seen[v.Name] = true
+	}
+	var variants []TaggedVariant
+	for _, v := range e.Variants {
+		variants = append(variants, TaggedVariant{Name: v.Name, Type: ev.resolveTypeExpr(v.TypeExpr)})
+	}
+	first := variants[0]
+	inner := zeroValueForType(first.Type)
+	if inner == nil {
+		inner = Undefined()
+	}
+	return &Value{
+		Kind:        KindTaggedUnion,
+		TaggedUnion: &TaggedUnionValue{Tag: first.Name, Inner: inner, Variants: variants},
+	}, nil
+}
+
+// evalStructDecl evaluates "struct { fields }" — a standalone struct type
+// declaration (§3.2, §6.2). It produces a struct value whose binding-level
+// CalledName mechanism names the type.
+func (ev *Evaluator) evalStructDecl(e *ast.StructDeclExpr, scope *Scope) (*Value, error) {
+	se := &ast.StructExpr{Fields: e.Fields, Position: e.Position}
+	return ev.evalStruct(se, scope)
+}
+
 // evalOf implements field extraction: "name is of expr" (§5.8).
 func (ev *Evaluator) evalOf(e *ast.OfExpr, scope *Scope) (*Value, error) {
 	key := scope.exclude
@@ -720,9 +916,13 @@ func (ev *Evaluator) evalStructImport(e *ast.StructImportExpr) (*Value, error) {
 	if !filepath.IsAbs(path) {
 		path = filepath.Join(ev.baseDir, path)
 	}
+	// §7.1: canonicalize to a physical absolute path for circular import
+	// detection and diamond deduplication. Steps required by the spec:
+	// (1) absolute, (2) clean, (3) symlinks resolved.
+	if abs, err := filepath.Abs(path); err == nil {
+		path = abs
+	}
 	path = filepath.Clean(path)
-	// Normalize via EvalSymlinks so different relative paths to the same file
-	// are detected as circular imports.
 	if real, err := filepath.EvalSymlinks(path); err == nil {
 		path = real
 	}

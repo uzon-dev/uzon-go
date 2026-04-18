@@ -43,6 +43,10 @@ func NewParser(src []byte, file string) *Parser {
 func (p *Parser) Parse() (*Document, error) {
 	doc := &Document{Position: p.cur.Pos}
 	doc.Bindings = p.parseBindings(token.EOF)
+	// Surface lexical errors recorded during scanning.
+	if lexErrs := p.lex.Errors(); len(lexErrs) > 0 {
+		return doc, fmt.Errorf("%s", lexErrs[0].Error())
+	}
 	if len(p.errors) > 0 {
 		return doc, p.errors[0]
 	}
@@ -176,16 +180,34 @@ func (p *Parser) parseBinding() *Binding {
 
 	// Optional trailing "called Name" for type naming (§6).
 	// §3.8: called is not permitted inside function bodies.
+	// §6.2: 'called' is forbidden alongside standalone type declarations.
 	if p.at(token.Called) {
 		if p.inFunctionBody {
 			p.errorf(p.cur.Pos, "'called' is not permitted inside function bodies")
+		} else if isStandaloneTypeDecl(b.Value) {
+			p.errorf(p.cur.Pos, "'called' is not permitted with standalone type declarations (§6.2)")
 		} else {
 			p.advance()
 			b.CalledName = p.parseName()
 		}
 	}
 
+	// §6.2: standalone type declarations adopt the binding name as the type name.
+	if isStandaloneTypeDecl(b.Value) {
+		b.CalledName = b.Name
+	}
+
 	return b
+}
+
+// isStandaloneTypeDecl reports whether expr is a standalone type
+// declaration (enum, union, tagged union, or struct literal after `struct`).
+func isStandaloneTypeDecl(expr Expr) bool {
+	switch expr.(type) {
+	case *EnumDeclExpr, *UnionDeclExpr, *TaggedUnionDeclExpr, *StructDeclExpr:
+		return true
+	}
+	return false
 }
 
 // parseName reads an identifier name.

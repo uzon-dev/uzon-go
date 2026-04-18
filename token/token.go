@@ -44,8 +44,10 @@ const (
 	As      // as      (type annotation/assertion)
 	Named   // named   (tagged union variant label)
 	With    // with    (struct override)
-	Union  // union   (union type marker)
-	PlusKw // plus    (struct extension)
+	Union   // union   (union type marker)
+	PlusKw  // plus    (struct extension)
+	Enum    // enum    (enum type declaration, §3.5)
+	Tagged  // tagged  (tagged union prefix, §3.7)
 
 	// Keywords — conversion/extraction (§5.5, §5.8).
 	To // to (type conversion)
@@ -124,6 +126,7 @@ var typeNames = map[Type]string{
 	True: "true", False: "false", Null: "null", Inf: "inf", NaN: "nan", Undefined: "undefined",
 	Is: "is", Are: "are",
 	From: "from", Called: "called", As: "as", Named: "named", With: "with", Union: "union", PlusKw: "plus",
+	Enum: "enum", Tagged: "tagged",
 	To: "to", Of: "of",
 	And: "and", Or: "or", Not: "not",
 	If: "if", Then: "then", Else: "else", Case: "case", When: "when",
@@ -154,6 +157,7 @@ var Keywords = map[string]Type{
 	"true": True, "false": False, "null": Null, "inf": Inf, "nan": NaN, "undefined": Undefined,
 	"is": Is, "are": Are,
 	"from": From, "called": Called, "as": As, "named": Named, "with": With, "union": Union, "plus": PlusKw,
+	"enum": Enum, "tagged": Tagged,
 	"to": To, "of": Of,
 	"and": And, "or": Or, "not": Not,
 	"if": If, "then": Then, "else": Else, "case": Case, "when": When,
@@ -182,6 +186,97 @@ func (p Pos) String() string {
 		return p.File + ":" + itoa(p.Line) + ":" + itoa(p.Column)
 	}
 	return itoa(p.Line) + ":" + itoa(p.Column)
+}
+
+// sprintf is a minimal fmt.Sprintf-style helper supporting %d, %s, %q, %v, %x.
+// Used by lexer error messages without importing fmt.
+func sprintf(format string, args ...interface{}) string {
+	var sb []byte
+	ai := 0
+	for i := 0; i < len(format); i++ {
+		c := format[i]
+		if c != '%' || i+1 >= len(format) {
+			sb = append(sb, c)
+			continue
+		}
+		i++
+		if ai >= len(args) {
+			sb = append(sb, '%', format[i])
+			continue
+		}
+		switch format[i] {
+		case 'd':
+			switch v := args[ai].(type) {
+			case int:
+				sb = append(sb, itoa(v)...)
+			case int64:
+				sb = append(sb, itoa(int(v))...)
+			case rune:
+				sb = append(sb, itoa(int(v))...)
+			default:
+				sb = append(sb, "?"...)
+			}
+		case 's':
+			if s, ok := args[ai].(string); ok {
+				sb = append(sb, s...)
+			}
+		case 'q':
+			if s, ok := args[ai].(string); ok {
+				sb = append(sb, '"')
+				sb = append(sb, s...)
+				sb = append(sb, '"')
+			}
+		case 'c':
+			if r, ok := args[ai].(rune); ok {
+				sb = append(sb, string(r)...)
+			} else if c, ok := args[ai].(byte); ok {
+				sb = append(sb, c)
+			}
+		case 'x':
+			switch v := args[ai].(type) {
+			case int:
+				sb = append(sb, hexstr(uint64(v))...)
+			case int64:
+				sb = append(sb, hexstr(uint64(v))...)
+			case rune:
+				sb = append(sb, hexstr(uint64(v))...)
+			case uint:
+				sb = append(sb, hexstr(uint64(v))...)
+			default:
+				sb = append(sb, "?"...)
+			}
+		case 'v':
+			switch v := args[ai].(type) {
+			case string:
+				sb = append(sb, v...)
+			case int:
+				sb = append(sb, itoa(v)...)
+			case rune:
+				sb = append(sb, string(v)...)
+			default:
+				sb = append(sb, "?"...)
+			}
+		default:
+			sb = append(sb, '%', format[i])
+		}
+		ai++
+	}
+	return string(sb)
+}
+
+func hexstr(u uint64) string {
+	if u == 0 {
+		return "0"
+	}
+	const digits = "0123456789ABCDEF"
+	var buf [20]byte
+	i := len(buf)
+	for u > 0 {
+		i--
+		buf[i] = digits[u&0xF]
+		u >>= 4
+	}
+	return string(buf[i:])
 }
 
 // itoa converts an integer to its decimal string representation
