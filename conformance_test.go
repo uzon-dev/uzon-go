@@ -93,8 +93,7 @@ func TestConformanceRoundtrip(t *testing.T) {
 		t.Run(strings.TrimSuffix(name, ".uzon"), func(t *testing.T) {
 			original, err := ParseFile(filepath.Join(dir, name))
 			if err != nil {
-				t.Skipf("parse: %v", err)
-				return
+				t.Fatalf("parse: %v", err)
 			}
 			em := &emitter{}
 			em.emitDocument(original)
