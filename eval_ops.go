@@ -725,7 +725,12 @@ func (ev *Evaluator) evalRepeat(left, right *Value) (*Value, error) {
 		for i := int64(0); i < n; i++ {
 			elems = append(elems, left.List.Elements...)
 		}
-		return NewList(elems, left.List.ElementType), nil
+		// Preserve element type info so `[x] ** 0` retains inferred type (§3.4).
+		elemType := left.List.ElementType
+		if elemType == nil && len(left.List.Elements) > 0 {
+			elemType = left.List.Elements[0].Type
+		}
+		return NewList(elems, elemType), nil
 	}
 	return nil, typeErrorf("** requires string or list left operand, got %s", left.Kind)
 }

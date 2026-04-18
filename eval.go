@@ -239,11 +239,11 @@ func (ev *Evaluator) evalBindings(bindings []*ast.Binding, scope *Scope) (*Value
 			return nil, &PosError{Pos: b.Position, Msg: fmt.Sprintf("binding %q", b.Name), Cause: err}
 		}
 
-		// §3.4: bare empty list without type annotation is an error
-		if _, isBareList := b.Value.(*ast.ListExpr); isBareList {
-			if v.Kind == KindList && len(v.List.Elements) == 0 {
-				return nil, &PosError{Pos: b.Position, Msg: fmt.Sprintf("binding %q: empty list requires type annotation (e.g. [] as [i32])", b.Name)}
-			}
+		// §3.4: empty list without type information is an error.
+		// Catches both bare `[]` and expressions like `[] ++ []` where no
+		// side provides an element type.
+		if v.Kind == KindList && len(v.List.Elements) == 0 && v.List.ElementType == nil {
+			return nil, &PosError{Pos: b.Position, Msg: fmt.Sprintf("binding %q: empty list requires type annotation (e.g. [] as [i32])", b.Name)}
 		}
 
 		// Bare identifier that was not resolved by "as"/"from" is undefined (§5.12)

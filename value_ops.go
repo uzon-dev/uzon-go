@@ -275,7 +275,12 @@ func Repeat(v any, n int) (*Value, error) {
 		for i := 0; i < n; i++ {
 			elems = append(elems, val.List.Elements...)
 		}
-		return NewList(elems, val.List.ElementType), nil
+		// Preserve element type info so `[x] ** 0` retains inferred type (§3.4).
+		elemType := val.List.ElementType
+		if elemType == nil && len(val.List.Elements) > 0 {
+			elemType = val.List.Elements[0].Type
+		}
+		return NewList(elems, elemType), nil
 	}
 	return nil, fmt.Errorf("Repeat requires string or list operand, got %s", val.Kind)
 }
