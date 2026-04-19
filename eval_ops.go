@@ -850,13 +850,14 @@ func (ev *Evaluator) evalIf(e *ast.IfExpr, scope *Scope) (*Value, error) {
 	if cond.Kind != KindBool {
 		return nil, typeErrorf("if condition must be bool, got %s", cond.Kind)
 	}
+	thenScope, elseScope := ev.narrowIfBranches(e.Cond, scope)
 	if cond.Bool {
-		thenVal, err := ev.evalExpr(e.Then, scope)
+		thenVal, err := ev.evalExpr(e.Then, thenScope)
 		if err != nil {
 			return nil, err
 		}
 		// §D.5: speculatively evaluate else branch
-		elseVal, elseErr := ev.evalExpr(e.Else, scope)
+		elseVal, elseErr := ev.evalExpr(e.Else, elseScope)
 		if elseErr != nil {
 			if isTypeError(elseErr) {
 				return nil, elseErr
@@ -869,12 +870,12 @@ func (ev *Evaluator) evalIf(e *ast.IfExpr, scope *Scope) (*Value, error) {
 		}
 		return thenVal, nil
 	}
-	elseVal, err := ev.evalExpr(e.Else, scope)
+	elseVal, err := ev.evalExpr(e.Else, elseScope)
 	if err != nil {
 		return nil, err
 	}
 	// §D.5: speculatively evaluate then branch
-	thenVal, thenErr := ev.evalExpr(e.Then, scope)
+	thenVal, thenErr := ev.evalExpr(e.Then, thenScope)
 	if thenErr != nil {
 		if isTypeError(thenErr) {
 			return nil, thenErr
@@ -888,14 +889,236 @@ func (ev *Evaluator) evalIf(e *ast.IfExpr, scope *Scope) (*Value, error) {
 	return elseVal, nil
 }
 
+// narrowIfBranches inspects the condition and returns scopes for the
+// then/else branches with the narrowing target rebound (§5.9 R8). When
+// the condition is not a recognized narrowing predicate, the original
+// scope is reused for both branches.
+func (ev *Evaluator) narrowIfBranches(cond ast.Expr, scope *Scope) (*Scope, *Scope) {
+	name, posVal, negVal, ok := ev.detectIfNarrowing(cond, scope)
+	if !ok {
+		return scope, scope
+	}
+	thenScope := scope
+	elseScope := scope
+	if posVal != nil {
+		thenScope = newScope(scope)
+		thenScope.set(name, posVal)
+	}
+	if negVal != nil {
+		elseScope = newScope(scope)
+		elseScope.set(name, negVal)
+	}
+	return thenScope, elseScope
+}
+
+// detectIfNarrowing returns the identifier name and narrowed values for
+// the then/else branches of supported predicates: `x is [not] type T`,
+// `x is [not] named V`, `x is [not] null`, `x is [not] undefined`.
+func (ev *Evaluator) detectIfNarrowing(cond ast.Expr, scope *Scope) (name string, posVal, negVal *Value, ok bool) {
+	switch c := cond.(type) {
+	case *ast.IsTypeExpr:
+		ident, ok2 := c.Value.(*ast.IdentExpr)
+		if !ok2 {
+			return "", nil, nil, false
+		}
+		val, ok2 := scope.get(ident.Name)
+		if !ok2 {
+			return "", nil, nil, false
+		}
+		ti := ev.resolveTypeExpr(c.TypeExpr)
+		matchVal, otherVal := narrowByType(val, ti)
+		if c.Negated {
+			matchVal, otherVal = otherVal, matchVal
+		}
+		return ident.Name, matchVal, otherVal, true
+	case *ast.IsNamedExpr:
+		ident, ok2 := c.Value.(*ast.IdentExpr)
+		if !ok2 {
+			return "", nil, nil, false
+		}
+		val, ok2 := scope.get(ident.Name)
+		if !ok2 || val.Kind != KindTaggedUnion {
+			return "", nil, nil, false
+		}
+		matchVal, otherVal := narrowByVariant(val, c.Variant)
+		if c.Negated {
+			matchVal, otherVal = otherVal, matchVal
+		}
+		return ident.Name, matchVal, otherVal, true
+	case *ast.BinaryExpr:
+		if c.Op != token.Is && c.Op != token.IsNot {
+			return "", nil, nil, false
+		}
+		ident, _ := c.Left.(*ast.IdentExpr)
+		if ident == nil {
+			return "", nil, nil, false
+		}
+		val, ok2 := scope.get(ident.Name)
+		if !ok2 {
+			return "", nil, nil, false
+		}
+		switch c.Right.(type) {
+		case *ast.UndefinedExpr:
+			matchVal, otherVal := narrowByUndefined(val)
+			if c.Op == token.IsNot {
+				matchVal, otherVal = otherVal, matchVal
+			}
+			return ident.Name, matchVal, otherVal, true
+		}
+		if lit, isLit := c.Right.(*ast.LiteralExpr); isLit && lit.Token.Type == token.Null {
+			matchVal, otherVal := narrowByNull(val)
+			if c.Op == token.IsNot {
+				matchVal, otherVal = otherVal, matchVal
+			}
+			return ident.Name, matchVal, otherVal, true
+		}
+	}
+	return "", nil, nil, false
+}
+
+// narrowByType returns (matchedValue, unmatchedValue). For a union value,
+// the matched branch unwraps to the inner if it matches T; otherwise a
+// zero of T. The unmatched branch keeps the inner if it doesn't match T;
+// otherwise a zero of the single remaining member type (if any).
+func narrowByType(val *Value, ti *TypeInfo) (*Value, *Value) {
+	if ti == nil {
+		return val, val
+	}
+	if val.Kind == KindUnion && val.Union != nil {
+		inner := val.Union.Inner
+		matchedInner := inner
+		if !valueMatchesType(inner, ti) {
+			matchedInner = zeroValueForType(ti)
+		}
+		var otherVal *Value = inner
+		if valueMatchesType(inner, ti) {
+			var remaining []*TypeInfo
+			for _, mt := range val.Union.MemberTypes {
+				if !typeInfosMatch(mt, ti) {
+					remaining = append(remaining, mt)
+				}
+			}
+			if len(remaining) == 1 {
+				otherVal = zeroValueForType(remaining[0])
+			} else {
+				otherVal = Undefined()
+			}
+		}
+		return matchedInner, otherVal
+	}
+	return val, val
+}
+
+func narrowByVariant(val *Value, variant string) (*Value, *Value) {
+	tu := val.TaggedUnion
+	if tu == nil {
+		return val, val
+	}
+	matchedInner := tu.Inner
+	if tu.Tag != variant {
+		for _, v := range tu.Variants {
+			if v.Name == variant {
+				matchedInner = zeroValueForType(v.Type)
+				break
+			}
+		}
+	}
+	var otherVal *Value = tu.Inner
+	if tu.Tag == variant {
+		var remaining []TaggedVariant
+		for _, v := range tu.Variants {
+			if v.Name != variant {
+				remaining = append(remaining, v)
+			}
+		}
+		if len(remaining) == 1 {
+			otherVal = zeroValueForType(remaining[0].Type)
+		} else {
+			otherVal = Undefined()
+		}
+	}
+	return matchedInner, otherVal
+}
+
+func narrowByUndefined(val *Value) (*Value, *Value) {
+	matched := Undefined()
+	other := val
+	if val.Kind == KindUndefined {
+		other = Undefined()
+	}
+	return matched, other
+}
+
+func narrowByNull(val *Value) (*Value, *Value) {
+	matched := Null()
+	other := val
+	if val.Kind == KindUnion && val.Union != nil {
+		var remaining []*TypeInfo
+		for _, mt := range val.Union.MemberTypes {
+			if mt == nil || mt.BaseType != "null" {
+				remaining = append(remaining, mt)
+			}
+		}
+		if val.Union.Inner != nil && val.Union.Inner.Kind != KindNull {
+			other = val.Union.Inner
+		} else if len(remaining) == 1 {
+			other = zeroValueForType(remaining[0])
+		}
+	}
+	return matched, other
+}
+
+// valueMatchesType reports whether a value's type matches the given type.
+func valueMatchesType(v *Value, ti *TypeInfo) bool {
+	if v == nil || ti == nil {
+		return false
+	}
+	if v.Type != nil && typeInfosMatch(v.Type, ti) {
+		return true
+	}
+	switch ti.BaseType {
+	case "bool":
+		return v.Kind == KindBool
+	case "string":
+		return v.Kind == KindString
+	case "null":
+		return v.Kind == KindNull
+	}
+	if isIntegerType(ti.BaseType) {
+		return v.Kind == KindInt
+	}
+	if isFloatType(ti.BaseType) {
+		return v.Kind == KindFloat
+	}
+	return false
+}
+
+func typeInfosMatch(a, b *TypeInfo) bool {
+	if a == nil || b == nil {
+		return false
+	}
+	if a.BaseType != "" && a.BaseType == b.BaseType {
+		return true
+	}
+	if a.Name != "" && a.Name == b.Name {
+		return true
+	}
+	return false
+}
+
 // branchTypesCompatible checks if two branch values have compatible types.
 // null is compatible with any type (§5.9, §5.10).
+// undefined is compatible with any type (§5.9 R8 — symmetric narrowing
+// permits a branch to surface the undefined inhabitant).
 // §5: adoptable int literal is compatible with float (cross-category adoption).
 func branchTypesCompatible(a, b *Value) bool {
 	if a.Kind == b.Kind {
 		return true
 	}
 	if a.Kind == KindNull || b.Kind == KindNull {
+		return true
+	}
+	if a.Kind == KindUndefined || b.Kind == KindUndefined {
 		return true
 	}
 	// §5: int literal can adopt float type
@@ -1043,10 +1266,25 @@ func zeroValueForType(ti *TypeInfo) *Value {
 		v := Float64(0)
 		v.Type = ti
 		return v
-	default:
-		// Named/struct types: return undefined to suppress speculative errors.
-		return Undefined()
 	}
+	// Tuple: recursively construct (default(T1), default(T2), ...) per §3.6.
+	if ti.BaseType == "tuple" || len(ti.TupleElemTypes) > 0 {
+		elems := make([]*Value, len(ti.TupleElemTypes))
+		for i, et := range ti.TupleElemTypes {
+			ev := zeroValueForType(et)
+			if ev == nil {
+				ev = Undefined()
+			}
+			elems[i] = ev
+		}
+		return &Value{Kind: KindTuple, Tuple: &TupleValue{Elements: elems}, Type: ti}
+	}
+	// List: empty list typed by the element type.
+	if ti.BaseType == "list" || ti.ListElemType != nil {
+		return &Value{Kind: KindList, List: &ListValue{Elements: nil, ElementType: ti.ListElemType}, Type: ti}
+	}
+	// Named/struct types: return undefined to suppress speculative errors.
+	return Undefined()
 }
 
 // narrowScrutineeNamed returns the narrowed value for a case named branch (§5.10).
@@ -1431,8 +1669,14 @@ func (ev *Evaluator) valueMatchesType(val *Value, ti *TypeInfo) bool {
 		}
 		return ti.Name == "struct"
 	case KindList:
+		if val.Type != nil && val.Type.Name != "" && val.Type.Name == ti.Name {
+			return true
+		}
 		return ti.BaseType == "list" || ti.Name == "list"
 	case KindTuple:
+		if val.Type != nil && val.Type.Name != "" && val.Type.Name == ti.Name {
+			return true
+		}
 		return ti.BaseType == "tuple" || ti.Name == "tuple"
 	case KindEnum:
 		if val.Type != nil && val.Type.Name != "" {

@@ -273,9 +273,11 @@ func (p *Parser) parseAreExpr() Expr {
 	if p.at(token.As) {
 		p.advance()
 		typeAnn = p.parseTypeExpr()
-	} else if last, ok := elems[len(elems)-1].(*AsExpr); ok && last.TypeExpr != nil && last.TypeExpr.ListElem != nil {
-		// parseExpression greedily absorbs "as [Type]"; the trailing list
-		// annotation belongs to the are-expression, not the last element.
+	} else if last, ok := elems[len(elems)-1].(*AsExpr); ok && last.TypeExpr != nil && !last.Parenthesized {
+		// §3.4.1 / §9: a trailing `as type_expr` at the end of an are_binding
+		// is ALWAYS lifted to the are-binding level, regardless of the type
+		// form. To annotate the final element individually, wrap it in
+		// parentheses: `xs are 1, 2, (3 as i32)`.
 		typeAnn = last.TypeExpr
 		elems[len(elems)-1] = last.Value
 	}

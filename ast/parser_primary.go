@@ -348,6 +348,11 @@ func (p *Parser) parseTupleOrGroup() Expr {
 
 	if p.at(token.RParen) {
 		p.advance()
+		// Mark a wrapped AsExpr so the §3.4.1/§9 lift rule in are-bindings
+		// can tell `(x as T)` apart from a bare `x as T`.
+		if a, ok := first.(*AsExpr); ok {
+			a.Parenthesized = true
+		}
 		return first // grouping: (expr)
 	}
 

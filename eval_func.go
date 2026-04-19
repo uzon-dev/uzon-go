@@ -263,6 +263,68 @@ func collectBindingDeps(expr ast.Expr) map[string]bool {
 	return refs
 }
 
+// collectBindingTypeRefs finds all type-name roots referenced by TypeExprs
+// embedded in a binding's value expression. Used to add dependencies on
+// sibling bindings that introduce a type via `called Name`.
+func collectBindingTypeRefs(expr ast.Expr) map[string]bool {
+	refs := make(map[string]bool)
+	var walk func(ast.Expr)
+	var walkType func(*ast.TypeExpr)
+	walkType = func(te *ast.TypeExpr) {
+		if te == nil {
+			return
+		}
+		if len(te.Path) > 0 {
+			refs[te.Path[0]] = true
+		}
+		walkType(te.ListElem)
+		for _, t := range te.TupleElems {
+			walkType(t)
+		}
+	}
+	walk = func(e ast.Expr) {
+		walkExpr(e, func(node ast.Expr) {
+			switch n := node.(type) {
+			case *ast.AsExpr:
+				walkType(n.TypeExpr)
+			case *ast.ToExpr:
+				walkType(n.TypeExpr)
+			case *ast.IsTypeExpr:
+				walkType(n.TypeExpr)
+			case *ast.UnionDeclExpr:
+				for _, t := range n.MemberTypes {
+					walkType(t)
+				}
+			case *ast.UnionExpr:
+				for _, t := range n.MemberTypes {
+					walkType(t)
+				}
+			case *ast.TaggedUnionDeclExpr:
+				for _, v := range n.Variants {
+					walkType(v.TypeExpr)
+				}
+			case *ast.NamedExpr:
+				for _, v := range n.Variants {
+					walkType(v.TypeExpr)
+				}
+			case *ast.FunctionExpr:
+				for _, p := range n.Params {
+					walkType(p.TypeExpr)
+				}
+				walkType(n.ReturnType)
+			case *ast.CaseExpr:
+				for _, w := range n.Whens {
+					walkType(w.TypeExpr)
+				}
+			case *ast.AreExpr:
+				walkType(n.TypeAnnotation)
+			}
+		})
+	}
+	walk(expr)
+	return refs
+}
+
 // collectCallRefs finds binding names that are called as functions.
 func collectCallRefs(expr ast.Expr) map[string]bool {
 	refs := make(map[string]bool)
@@ -376,6 +438,9 @@ func (ev *Evaluator) evalAre(e *ast.AreExpr, scope *Scope) (*Value, error) {
 	var listType, elemType *TypeInfo
 	if e.TypeAnnotation != nil {
 		listType = ev.resolveTypeExpr(e.TypeAnnotation)
+		if listType != nil && listType.ListElemType == nil && listType.BaseType != "list" {
+			return nil, typeErrorf("are-binding list-level annotation must be a list type, got %s (§3.4.1, §6.1)", listType.TypeKey())
+		}
 		if listType != nil && listType.ListElemType != nil {
 			elemType = listType.ListElemType
 		} else {

@@ -224,6 +224,10 @@ type AsExpr struct {
 	Value    Expr
 	TypeExpr *TypeExpr
 	Position token.Pos
+	// Parenthesized is true when the entire `expr as Type` was wrapped in
+	// parens in the source. Suppresses the §3.4.1/§9 lift rule in
+	// are-bindings: `xs are 1, 2, (3 as i32)` keeps `as i32` element-local.
+	Parenthesized bool
 }
 
 func (e *AsExpr) Pos() token.Pos { return e.Position }

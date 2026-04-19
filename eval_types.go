@@ -5,6 +5,7 @@ package uzon
 
 import (
 	"fmt"
+	"math/big"
 	"os"
 	"path/filepath"
 	"strings"
@@ -224,6 +225,13 @@ func (ev *Evaluator) evalAs(e *ast.AsExpr, scope *Scope) (*Value, error) {
 		return nil, err
 	}
 
+	// §6.1 R6: `null as T` is a type error unless T admits null.
+	// T admits null when it IS null, contains null in a union, or is a
+	// tagged union with a null-inner variant.
+	if val.Kind == KindNull && !ev.typeAdmitsNull(e.TypeExpr, ti, scope) {
+		return nil, typeErrorf("null cannot be cast to %s", typeExprName(e.TypeExpr, ti))
+	}
+
 	// §6.1: undefined propagates through "as", but type name MUST still be validated
 	if val.Kind == KindUndefined {
 		if ti.Name != "" && ti.BaseType == "" {
@@ -415,6 +423,52 @@ func (ev *Evaluator) evalAs(e *ast.AsExpr, scope *Scope) (*Value, error) {
 			if parseBuiltinType(ti.Name) == nil {
 				return nil, typeErrorf("unknown type %q", ti.Name)
 			}
+		}
+	}
+
+	// §6.3 R5/R7: when annotating against a named union, verify the value
+	// is compatible with at least one member's category (e.g. a float
+	// literal cannot adopt an integer-only union). The adoptable inner
+	// adopts the first matching member type so subsequent narrowing
+	// (`is type`, `case type`) can identify the underlying member.
+	// First pass: exact category match. Second pass: integer→float promotion.
+	if ti.Name != "" && len(e.TypeExpr.Path) >= 1 {
+		if bv, ok := scope.get(e.TypeExpr.Path[0]); ok && bv.Kind == KindUnion && bv.Union != nil {
+			var matchedType *TypeInfo
+			for _, mt := range bv.Union.MemberTypes {
+				if unionMemberCompatible(val, mt) {
+					matchedType = mt
+					break
+				}
+			}
+			promoted := false
+			if matchedType == nil && val.Kind == KindInt && val.Adoptable {
+				for _, mt := range bv.Union.MemberTypes {
+					if mt != nil && isFloatType(mt.BaseType) {
+						matchedType = mt
+						promoted = true
+						break
+					}
+				}
+			}
+			if matchedType == nil {
+				return nil, typeErrorf("value of kind %s is not compatible with any member of union %s", val.Kind, ti.Name)
+			}
+			var inner *Value
+			if promoted {
+				f := new(big.Float).SetInt(val.Int)
+				inner = &Value{Kind: KindFloat, Float: f, Type: matchedType}
+			} else if val.Adoptable || val.Type == nil {
+				inner = &Value{Kind: val.Kind, Int: val.Int, Float: val.Float, Str: val.Str, Bool: val.Bool, Type: matchedType}
+			} else {
+				inner = val
+			}
+			result := &Value{
+				Kind:  KindUnion,
+				Union: &UnionValue{Inner: inner, MemberTypes: bv.Union.MemberTypes},
+				Type:  ti,
+			}
+			return result, nil
 		}
 	}
 
@@ -828,7 +882,8 @@ func (ev *Evaluator) evalEnumDecl(e *ast.EnumDeclExpr) (*Value, error) {
 }
 
 // evalUnionDecl evaluates a standalone union declaration "union i32, string" (§3.6, §6.2).
-// The default value is the default of the first member type.
+// The default value is the default of the first member type. §3.6 requires
+// the first member's default to be transitively constructible.
 func (ev *Evaluator) evalUnionDecl(e *ast.UnionDeclExpr) (*Value, error) {
 	if len(e.MemberTypes) < 2 {
 		return nil, typeErrorf("union declaration requires at least 2 member types, got %d", len(e.MemberTypes))
@@ -847,6 +902,9 @@ func (ev *Evaluator) evalUnionDecl(e *ast.UnionDeclExpr) (*Value, error) {
 			}
 		}
 		memberTypes = append(memberTypes, ti)
+	}
+	if !ev.hasConstructibleDefault(memberTypes[0]) {
+		return nil, typeErrorf("union default cannot be constructed: first member %q has no default", memberTypes[0].TypeKey())
 	}
 	inner := zeroValueForType(memberTypes[0])
 	if inner == nil {

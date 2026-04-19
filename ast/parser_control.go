@@ -16,6 +16,12 @@ func (p *Parser) parseIfExpr() Expr {
 	then := p.parseExpression()
 	p.expect(token.Else)
 	els := p.parseExpression()
+	if _, isUndef := then.(*UndefinedExpr); isUndef {
+		p.errorf(then.Pos(), "literal 'undefined' is not permitted in 'then' branch position (§4.5)")
+	}
+	if _, isUndef := els.(*UndefinedExpr); isUndef {
+		p.errorf(els.Pos(), "literal 'undefined' is not permitted in 'else' branch position (§4.5)")
+	}
 	return &IfExpr{Cond: cond, Then: then, Else: els, Position: pos}
 }
 
@@ -273,6 +279,10 @@ func (p *Parser) parseFunctionExpr() Expr {
 	if body == nil {
 		p.errorf(pos, "function body must end with a return expression")
 	}
+	// §4.5: literal `undefined` cannot be the function body's final expression.
+	if _, isUndef := body.(*UndefinedExpr); isUndef {
+		p.errorf(body.Pos(), "literal 'undefined' is not permitted as a function body's return expression")
+	}
 
 	return &FunctionExpr{
 		Params:     params,
@@ -301,9 +311,13 @@ func (p *Parser) parseTypeExpr() *TypeExpr {
 		return &TypeExpr{ListElem: elem, Position: pos}
 	}
 
-	// Tuple type: (Type, Type, ...).
+	// Tuple type: (Type, Type, ...) or empty tuple () (the unit type, §3.4).
 	if p.at(token.LParen) {
 		p.advance()
+		if p.at(token.RParen) {
+			p.advance()
+			return &TypeExpr{TupleElems: []*TypeExpr{}, Position: pos}
+		}
 		var elems []*TypeExpr
 		elems = append(elems, p.parseTypeExpr())
 		for p.match(token.Comma) {

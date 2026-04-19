@@ -23,6 +23,13 @@ func (p *Parser) parseOrElse() Expr {
 		pos := p.cur.Pos
 		p.advance()
 		right := p.parseOr()
+		// §4.5: literal `undefined` is not permitted as an `or else` operand.
+		if _, isLeftUndef := left.(*UndefinedExpr); isLeftUndef {
+			p.errorf(left.Pos(), "literal 'undefined' is not permitted as 'or else' operand")
+		}
+		if _, isRightUndef := right.(*UndefinedExpr); isRightUndef {
+			p.errorf(right.Pos(), "literal 'undefined' is not permitted as 'or else' operand")
+		}
 		left = &BinaryExpr{Op: token.OrElse, Left: left, Right: right, Position: pos}
 	}
 	return left

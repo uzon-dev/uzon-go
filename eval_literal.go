@@ -142,6 +142,9 @@ func (ev *Evaluator) accessMember(obj *Value, member string) (*Value, error) {
 		return Undefined(), nil
 	case KindNull:
 		return nil, typeErrorf("member access on null")
+	case KindFunction:
+		// §5.12 R4: functions have no fields — member access is a type error.
+		return nil, typeErrorf("member access on function value: functions have no fields")
 	default:
 		return Undefined(), nil
 	}

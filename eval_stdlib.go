@@ -281,7 +281,9 @@ func (ev *Evaluator) stdFilter(evalArgs func() ([]*Value, error)) (*Value, error
 			results = append(results, elem)
 		}
 	}
-	return NewList(results, list.List.ElementType), nil
+	out := NewList(results, list.List.ElementType)
+	out.Type = list.Type
+	return out, nil
 }
 
 func (ev *Evaluator) stdReduce(evalArgs func() ([]*Value, error)) (*Value, error) {
@@ -375,7 +377,9 @@ func (ev *Evaluator) stdSort(evalArgs func() ([]*Value, error)) (*Value, error) 
 	if sortErr != nil {
 		return nil, sortErr
 	}
-	return NewList(sorted, list.List.ElementType), nil
+	out := NewList(sorted, list.List.ElementType)
+	out.Type = list.Type
+	return out, nil
 }
 
 func (ev *Evaluator) stdIsNan(evalArgs func() ([]*Value, error)) (*Value, error) {
@@ -547,7 +551,9 @@ func (ev *Evaluator) stdReverse(evalArgs func() ([]*Value, error)) (*Value, erro
 		for i, el := range vals[0].List.Elements {
 			reversed[n-1-i] = el
 		}
-		return NewList(reversed, vals[0].List.ElementType), nil
+		out := NewList(reversed, vals[0].List.ElementType)
+		out.Type = vals[0].Type
+		return out, nil
 	case KindString:
 		runes := []rune(vals[0].Str)
 		for i, j := 0, len(runes)-1; i < j; i, j = i+1, j-1 {

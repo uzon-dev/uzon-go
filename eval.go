@@ -257,13 +257,28 @@ func (ev *Evaluator) evalBindings(bindings []*ast.Binding, scope *Scope) (*Value
 		bindingByName[b.Name] = b
 	}
 
-	// Build dependency graph from identifier references
+	// Map called-type names back to the binding that declares them, so
+	// that type-name references in sibling bindings induce dependencies.
+	calledByName := make(map[string]string, len(bindings))
+	for _, b := range bindings {
+		if b.CalledName != "" {
+			calledByName[b.CalledName] = b.Name
+		}
+	}
+
+	// Build dependency graph from identifier references and type-name refs.
 	deps := make(map[string][]string, len(bindings))
 	for _, b := range bindings {
 		refs := collectBindingDeps(b.Value)
 		for ref := range refs {
 			if ref != b.Name && nameSet[ref] {
 				deps[b.Name] = append(deps[b.Name], ref)
+			}
+		}
+		typeRefs := collectBindingTypeRefs(b.Value)
+		for tr := range typeRefs {
+			if owner, ok := calledByName[tr]; ok && owner != b.Name && nameSet[owner] {
+				deps[b.Name] = append(deps[b.Name], owner)
 			}
 		}
 	}

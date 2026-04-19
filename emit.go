@@ -44,11 +44,21 @@ func (e *emitter) emitFieldBinding(f Field) {
 	e.emitFieldName(f.Name)
 	if f.Value.Kind == KindList && len(f.Value.List.Elements) > 0 {
 		e.sb.WriteString(" are ")
-		for i, elem := range f.Value.List.Elements {
+		elems := f.Value.List.Elements
+		for i, elem := range elems {
 			if i > 0 {
 				e.sb.WriteString(", ")
 			}
-			e.emitValue(elem)
+			// §3.4.1 / §9: a trailing `as Type` on the final element of an
+			// are-binding lifts to the list level. Wrap in parens to keep
+			// the annotation element-local.
+			if i == len(elems)-1 && e.emitsTrailingAs(elem) {
+				e.sb.WriteByte('(')
+				e.emitValue(elem)
+				e.sb.WriteByte(')')
+			} else {
+				e.emitValue(elem)
+			}
 		}
 	} else {
 		e.sb.WriteString(" is ")
@@ -151,6 +161,20 @@ func (e *emitter) emitValueInner(v *Value, withAnnotation bool) {
 			e.sb.WriteString(v.Type.BaseType)
 		}
 	}
+}
+
+// emitsTrailingAs reports whether emitValue would end with an `as Type`
+// suffix that the §3.4.1/§9 lift rule could grab in an are-binding.
+// Tagged unions in short form end with `named tag` (not lift-eligible), so
+// they are excluded here.
+func (e *emitter) emitsTrailingAs(v *Value) bool {
+	if v == nil || v.Type == nil {
+		return false
+	}
+	if v.Kind == KindEnum && e.definedTypes != nil && v.Type.Name != "" && e.definedTypes[v.Type.Name] {
+		return true
+	}
+	return needsTypeAnnotation(v)
 }
 
 // needsTypeAnnotation returns true when the value's type differs from the default.
