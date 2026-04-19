@@ -33,8 +33,8 @@ func (ev *Evaluator) evalStruct(e *ast.StructExpr, scope *Scope) (*Value, error)
 	outerShapes := ev.structShapes
 	ev.types = newTypeRegistry(outerTypes)
 	ev.enums = newEnumRegistry(outerEnums)
-	ev.taggedVariants = make(map[string][]TaggedVariant)
-	ev.structShapes = make(map[string][]Field)
+	ev.taggedVariants = newTaggedVariantRegistry(outerTagged)
+	ev.structShapes = newStructShapeRegistry(outerShapes)
 
 	val, err := ev.evalBindings(e.Fields, innerScope)
 
@@ -43,8 +43,8 @@ func (ev *Evaluator) evalStruct(e *ast.StructExpr, scope *Scope) (*Value, error)
 		val.typeScope = &structTypeScope{
 			types:  ev.types.types,
 			enums:  ev.enums.enums,
-			tagged: ev.taggedVariants,
-			shapes: ev.structShapes,
+			tagged: ev.taggedVariants.variants,
+			shapes: ev.structShapes.shapes,
 		}
 	}
 
@@ -210,11 +210,19 @@ func (ev *Evaluator) evalTuple(e *ast.TupleExpr, scope *Scope) (*Value, error) {
 
 // evalAs implements "as Type" annotation (§6.1).
 func (ev *Evaluator) evalAs(e *ast.AsExpr, scope *Scope) (*Value, error) {
+	ti := ev.resolveTypeExpr(e.TypeExpr)
+
+	// v0.10: type-context-aware evaluation for shapes that benefit from it.
+	if ctxVal, handled, err := ev.evalAsWithContext(e, ti, scope); err != nil {
+		return nil, err
+	} else if handled {
+		return ctxVal, nil
+	}
+
 	val, err := ev.evalExpr(e.Value, scope)
 	if err != nil {
 		return nil, err
 	}
-	ti := ev.resolveTypeExpr(e.TypeExpr)
 
 	// §6.1: undefined propagates through "as", but type name MUST still be validated
 	if val.Kind == KindUndefined {
@@ -269,7 +277,7 @@ func (ev *Evaluator) evalAs(e *ast.AsExpr, scope *Scope) (*Value, error) {
 		if val.Type != nil && val.Type.Name != "" && val.Type.Name != ti.Name {
 			return nil, typeErrorf("cannot annotate value of named type %q as %q (nominal identity)", val.Type.Name, ti.Name)
 		}
-		if expectedFields, ok := ev.structShapes[ti.Name]; ok {
+		if expectedFields, ok := ev.structShapes.get(ti.Name); ok {
 			if len(val.Struct.Fields) != len(expectedFields) {
 				return nil, fmt.Errorf("cannot cast struct to %s: different shape (%d fields vs %d)",
 					ti.Name, len(val.Struct.Fields), len(expectedFields))
@@ -310,7 +318,7 @@ func (ev *Evaluator) evalAs(e *ast.AsExpr, scope *Scope) (*Value, error) {
 			if elemTi.BaseType == "" {
 				if _, ok := ev.types.get(e.TypeExpr.ListElem.Path); !ok {
 					if _, ok := ev.enums.get(elemTi.Name); !ok {
-						if _, ok := ev.taggedVariants[elemTi.Name]; !ok {
+						if _, ok := ev.taggedVariants.get(elemTi.Name); !ok {
 							if parseBuiltinType(elemTi.Name) == nil {
 								return nil, typeErrorf("unknown type %q", elemTi.Name)
 							}
@@ -728,7 +736,7 @@ func (ev *Evaluator) evalNamed(e *ast.NamedExpr, scope *Scope) (*Value, error) {
 		// Reuse registered type
 		if val.Type != nil && val.Type.Name != "" {
 			reusedTypeName = val.Type.Name
-			if registered, ok := ev.taggedVariants[val.Type.Name]; ok {
+			if registered, ok := ev.taggedVariants.get(val.Type.Name); ok {
 				variants = registered
 				found := false
 				for _, v := range variants {
@@ -953,8 +961,8 @@ func (ev *Evaluator) evalStructImport(e *ast.StructImportExpr) (*Value, error) {
 		scope:          newScope(nil),
 		types:          newTypeRegistry(ev.types),
 		enums:          newEnumRegistry(ev.enums),
-		taggedVariants: make(map[string][]TaggedVariant),
-		structShapes:   make(map[string][]Field),
+		taggedVariants: newTaggedVariantRegistry(ev.taggedVariants),
+		structShapes:   newStructShapeRegistry(ev.structShapes),
 		env:            ev.env,
 		baseDir:        filepath.Dir(path),
 		imported:       ev.imported,
@@ -971,8 +979,8 @@ func (ev *Evaluator) evalStructImport(e *ast.StructImportExpr) (*Value, error) {
 		val.typeScope = &structTypeScope{
 			types:  subEv.types.types,
 			enums:  subEv.enums.enums,
-			tagged: subEv.taggedVariants,
-			shapes: subEv.structShapes,
+			tagged: subEv.taggedVariants.variants,
+			shapes: subEv.structShapes.shapes,
 		}
 	}
 

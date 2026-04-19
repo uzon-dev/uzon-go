@@ -73,7 +73,7 @@ func (p *Parser) parsePrimary() Expr {
 	case token.Ident:
 		name := p.cur.Literal
 		p.advance()
-		return &IdentExpr{Name: name, Position: pos}
+		return p.maybeVariantShorthand(name, pos)
 
 	case token.At:
 		// Keyword escape: @keyword as identifier reference (§9).
@@ -81,7 +81,7 @@ func (p *Parser) parsePrimary() Expr {
 			name := p.peek.Literal
 			p.advance() // consume @
 			p.advance() // consume keyword
-			return &IdentExpr{Name: name, Position: pos}
+			return p.maybeVariantShorthand(name, pos)
 		}
 		p.errorf(pos, "unexpected token %v (%q)", p.cur.Type, p.cur.Literal)
 		p.advance()
@@ -92,6 +92,56 @@ func (p *Parser) parsePrimary() Expr {
 		p.advance()
 		return &LiteralExpr{Token: token.Token{Type: token.Illegal, Pos: pos}}
 	}
+}
+
+// maybeVariantShorthand returns an identifier expression, or — when the next
+// token starts a primary on the same physical line and is not the start of a
+// new binding — wraps it in a VariantShorthandExpr per §3.7 v0.10. The
+// shorthand parses right-recursively because a primary can itself be another
+// VariantShorthandExpr.
+//
+// NEWLINE_SEP rule (spec §9): the inner primary MUST be on the same line as
+// the variant name. A newline ends the shorthand and starts a new binding /
+// expression. This prevents adjacent multi-line bindings from being glued
+// together (e.g. `... else n` followed by `if ...` on the next line).
+//
+// A "(" on the same physical line as the identifier is reserved for the
+// function-call postfix (parser_expr.go: parseCallOrAccess); the parser
+// produces a CallExpr there even when the callee turns out to be a tagged
+// variant. The evaluator re-interprets such call shapes as variant shorthand
+// when type context demands it.
+func (p *Parser) maybeVariantShorthand(name string, pos token.Pos) Expr {
+	if !p.atPrimaryStart() {
+		return &IdentExpr{Name: name, Position: pos}
+	}
+	if p.cur.Pos.Line != p.prev.Pos.Line {
+		return &IdentExpr{Name: name, Position: pos}
+	}
+	if p.at(token.LParen) {
+		return &IdentExpr{Name: name, Position: pos}
+	}
+	if p.isBindingStart() {
+		return &IdentExpr{Name: name, Position: pos}
+	}
+	inner := p.parsePrimary()
+	return &VariantShorthandExpr{Name: name, Inner: inner, Position: pos}
+}
+
+// atPrimaryStart reports whether the current token can begin a primary
+// expression (§9 primary production). Used by variant_shorthand detection
+// in parsePrimary.
+func (p *Parser) atPrimaryStart() bool {
+	switch p.cur.Type {
+	case token.IntLit, token.FloatLit, token.StringLit,
+		token.True, token.False, token.Null, token.Inf, token.NaN, token.Undefined,
+		token.Env, token.LBrace, token.LBrack, token.LParen,
+		token.If, token.Case, token.Struct, token.Enum, token.Union, token.Tagged, token.Function,
+		token.Ident:
+		return true
+	case token.At:
+		return token.IsKeyword(p.peek.Literal)
+	}
+	return false
 }
 
 // parseStringOrInterpolation handles string literals, multiline

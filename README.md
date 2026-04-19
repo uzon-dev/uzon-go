@@ -2,7 +2,7 @@
 
 Go implementation of [UZON](https://uzon.dev), a typed, human-readable data expression format.
 
-Implements [UZON specification v0.9](https://uzon.dev). Requires Go 1.25 or later.
+Implements [UZON specification v0.10](https://uzon.dev). Requires Go 1.25 or later.
 
 ```
 go get github.com/uzon-dev/uzon-go

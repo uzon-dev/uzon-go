@@ -126,6 +126,52 @@ func (r *EnumRegistry) get(name string) ([]string, bool) {
 	return nil, false
 }
 
+// TaggedVariantRegistry tracks named tagged-union types (§3.7).
+type TaggedVariantRegistry struct {
+	variants map[string][]TaggedVariant
+	parent   *TaggedVariantRegistry
+}
+
+func newTaggedVariantRegistry(parent *TaggedVariantRegistry) *TaggedVariantRegistry {
+	return &TaggedVariantRegistry{variants: make(map[string][]TaggedVariant), parent: parent}
+}
+
+func (r *TaggedVariantRegistry) get(name string) ([]TaggedVariant, bool) {
+	for cur := r; cur != nil; cur = cur.parent {
+		if v, ok := cur.variants[name]; ok {
+			return v, true
+		}
+	}
+	return nil, false
+}
+
+func (r *TaggedVariantRegistry) set(name string, variants []TaggedVariant) {
+	r.variants[name] = variants
+}
+
+// StructShapeRegistry tracks declared struct shapes (§3.2).
+type StructShapeRegistry struct {
+	shapes map[string][]Field
+	parent *StructShapeRegistry
+}
+
+func newStructShapeRegistry(parent *StructShapeRegistry) *StructShapeRegistry {
+	return &StructShapeRegistry{shapes: make(map[string][]Field), parent: parent}
+}
+
+func (r *StructShapeRegistry) get(name string) ([]Field, bool) {
+	for cur := r; cur != nil; cur = cur.parent {
+		if v, ok := cur.shapes[name]; ok {
+			return v, true
+		}
+	}
+	return nil, false
+}
+
+func (r *StructShapeRegistry) set(name string, shape []Field) {
+	r.shapes[name] = shape
+}
+
 // registerQualifiedTypes re-registers types from an inner struct scope
 // into the current scope with a qualified prefix (e.g. "outer.Color").
 func (ev *Evaluator) registerQualifiedTypes(prefix string, sts *structTypeScope) {
@@ -136,10 +182,10 @@ func (ev *Evaluator) registerQualifiedTypes(prefix string, sts *structTypeScope)
 		ev.enums.enums[prefix+"."+name] = variants
 	}
 	for name, variants := range sts.tagged {
-		ev.taggedVariants[prefix+"."+name] = variants
+		ev.taggedVariants.set(prefix+"."+name, variants)
 	}
 	for name, shape := range sts.shapes {
-		ev.structShapes[prefix+"."+name] = shape
+		ev.structShapes.set(prefix+"."+name, shape)
 	}
 }
 
@@ -148,8 +194,8 @@ type Evaluator struct {
 	scope          *Scope
 	types          *TypeRegistry
 	enums          *EnumRegistry
-	taggedVariants map[string][]TaggedVariant
-	structShapes   map[string][]Field
+	taggedVariants *TaggedVariantRegistry
+	structShapes   *StructShapeRegistry
 	env            map[string]string
 	baseDir        string
 	imported       map[string]*Value
@@ -163,8 +209,8 @@ func NewEvaluator() *Evaluator {
 		scope:          newScope(nil),
 		types:          newTypeRegistry(nil),
 		enums:          newEnumRegistry(nil),
-		taggedVariants: make(map[string][]TaggedVariant),
-		structShapes:   make(map[string][]Field),
+		taggedVariants: newTaggedVariantRegistry(nil),
+		structShapes:   newStructShapeRegistry(nil),
 		env:            envMap(),
 		imported:       make(map[string]*Value),
 		importing:      make(map[string]bool),
@@ -264,12 +310,12 @@ func (ev *Evaluator) evalBindings(bindings []*ast.Binding, scope *Scope) (*Value
 				ev.enums.enums[b.CalledName] = v.Enum.Variants
 			}
 			if v.Kind == KindTaggedUnion {
-				ev.taggedVariants[b.CalledName] = v.TaggedUnion.Variants
+				ev.taggedVariants.set(b.CalledName, v.TaggedUnion.Variants)
 			}
 			if v.Kind == KindStruct {
 				shape := make([]Field, len(v.Struct.Fields))
 				copy(shape, v.Struct.Fields)
-				ev.structShapes[b.CalledName] = shape
+				ev.structShapes.set(b.CalledName, shape)
 			}
 		}
 
@@ -497,6 +543,8 @@ func (ev *Evaluator) evalExprSwitch(expr ast.Expr, scope *Scope) (*Value, error)
 		return ev.evalAre(e, scope)
 	case *ast.InterpolatedStringExpr:
 		return ev.evalInterpolatedString(e, scope)
+	case *ast.VariantShorthandExpr:
+		return ev.evalVariantShorthand(e, scope, nil)
 	default:
 		return nil, fmt.Errorf("unknown expression type %T", expr)
 	}

@@ -149,7 +149,7 @@ func (ev *Evaluator) callFunction(fn *Value, args []*Value) (*Value, error) {
 			if p.TypeExpr != nil && arg.Kind == KindStruct {
 				pti := ev.resolveTypeExpr(p.TypeExpr)
 				if pti != nil && pti.Name != "" {
-					if expectedFields, ok := ev.structShapes[pti.Name]; ok {
+					if expectedFields, ok := ev.structShapes.get(pti.Name); ok {
 						if len(arg.Struct.Fields) != len(expectedFields) {
 							return nil, typeErrorf("argument %q: expected %s (%d fields), got struct with %d fields",
 								p.Name, pti.Name, len(expectedFields), len(arg.Struct.Fields))
@@ -205,7 +205,9 @@ func (ev *Evaluator) callFunction(fn *Value, args []*Value) (*Value, error) {
 	if fe.Body == nil {
 		return nil, fmt.Errorf("function body has no return expression")
 	}
-	result, err := ev.evalExpr(fe.Body, fnScope)
+	// v0.10 §3.5/§3.7: evaluate the body with the return type as context,
+	// so a bare variant or shorthand resolves against the declared return type.
+	result, err := ev.evalExprWithType(fe.Body, fnScope, fv.ReturnType)
 	if err != nil {
 		return nil, err
 	}
@@ -371,17 +373,28 @@ func walkExpr(expr ast.Expr, visit func(ast.Expr)) {
 // --- Are and interpolation ---
 
 func (ev *Evaluator) evalAre(e *ast.AreExpr, scope *Scope) (*Value, error) {
+	var listType, elemType *TypeInfo
+	if e.TypeAnnotation != nil {
+		listType = ev.resolveTypeExpr(e.TypeAnnotation)
+		if listType != nil && listType.ListElemType != nil {
+			elemType = listType.ListElemType
+		} else {
+			elemType = listType
+		}
+	}
 	var elems []*Value
 	for _, elem := range e.Elements {
-		v, err := ev.evalExpr(elem, scope)
+		var v *Value
+		var err error
+		if elemType != nil {
+			v, err = ev.evalListElemWithType(elem, scope, elemType)
+		} else {
+			v, err = ev.evalExpr(elem, scope)
+		}
 		if err != nil {
 			return nil, err
 		}
 		elems = append(elems, v)
-	}
-	var elemType *TypeInfo
-	if e.TypeAnnotation != nil {
-		elemType = ev.resolveTypeExpr(e.TypeAnnotation)
 	}
 	return NewList(elems, elemType), nil
 }
@@ -425,10 +438,16 @@ func (ev *Evaluator) evalCall(e *ast.CallExpr, scope *Scope) (*Value, error) {
 		return nil, typeErrorf("calling non-function value (%s)", fn.Kind)
 	}
 
-	// Evaluate arguments
+	// v0.10 §3.5/§3.7: evaluate each argument with the parameter's declared
+	// type as context, so variant shorthands and bare enum names resolve.
+	fv := fn.Function
 	args := make([]*Value, 0, len(e.Args))
-	for _, a := range e.Args {
-		v, err := ev.evalExpr(a, scope)
+	for i, a := range e.Args {
+		var ti *TypeInfo
+		if i < len(fv.Params) {
+			ti = fv.Params[i].Type
+		}
+		v, err := ev.evalExprWithType(a, scope, ti)
 		if err != nil {
 			return nil, err
 		}

@@ -38,6 +38,11 @@ func (ev *Evaluator) resolveTypeExpr(te *ast.TypeExpr) *TypeInfo {
 			return ti
 		}
 		if registered, ok := ev.types.get(te.Path); ok {
+			if len(te.Path) > 1 && len(registered.Path) == 0 {
+				cp := *registered
+				cp.Path = te.Path
+				return &cp
+			}
 			return registered
 		}
 		return &TypeInfo{Name: name, Path: te.Path}

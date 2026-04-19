@@ -68,6 +68,22 @@ func (e *IdentExpr) Pos() token.Pos { return e.Position }
 func (e *IdentExpr) nodeTag()       {}
 func (e *IdentExpr) exprTag()       {}
 
+// VariantShorthandExpr represents the v0.10 tagged union variant shorthand
+// (§3.7): `variant_name primary` (e.g., `pressed "enter"`). It sits at the
+// `primary` grammar production and binds tighter than every expression-level
+// operator. The shorthand is resolved at evaluation time when type context
+// (via `as Type`, struct field type, function parameter, function return,
+// or list element type) supplies the tagged union type.
+type VariantShorthandExpr struct {
+	Name     string
+	Inner    Expr
+	Position token.Pos
+}
+
+func (e *VariantShorthandExpr) Pos() token.Pos { return e.Position }
+func (e *VariantShorthandExpr) nodeTag()       {}
+func (e *VariantShorthandExpr) exprTag()       {}
+
 // UndefinedExpr represents the "undefined" literal (§3.1).
 // Undefined is a special state indicating a missing value, distinct from null.
 type UndefinedExpr struct {

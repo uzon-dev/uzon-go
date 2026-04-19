@@ -273,6 +273,11 @@ func (p *Parser) parseAreExpr() Expr {
 	if p.at(token.As) {
 		p.advance()
 		typeAnn = p.parseTypeExpr()
+	} else if last, ok := elems[len(elems)-1].(*AsExpr); ok && last.TypeExpr != nil && last.TypeExpr.ListElem != nil {
+		// parseExpression greedily absorbs "as [Type]"; the trailing list
+		// annotation belongs to the are-expression, not the last element.
+		typeAnn = last.TypeExpr
+		elems[len(elems)-1] = last.Value
 	}
 
 	return &AreExpr{Elements: elems, TypeAnnotation: typeAnn, Position: pos}
