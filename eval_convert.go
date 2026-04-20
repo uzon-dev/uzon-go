@@ -195,7 +195,7 @@ func (ev *Evaluator) convertToInt(val *Value, target *TypeInfo) (*Value, error) 
 	default:
 		return nil, typeErrorf("cannot convert %s to %s", val.Kind, target.BaseType)
 	}
-	if target.BitSize > 0 && target.BitSize <= 64 {
+	if isIntegerType(target.BaseType) {
 		if err := checkIntRange(n, target.BitSize, target.Signed); err != nil {
 			return nil, err
 		}

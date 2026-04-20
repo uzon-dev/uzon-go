@@ -43,11 +43,10 @@ func (ev *Evaluator) evalLiteral(e *ast.LiteralExpr) (*Value, error) {
 		if !ok {
 			return nil, fmt.Errorf("invalid integer literal: %s", e.Token.Literal)
 		}
-		// §3.1: integer literals default to i64. Check range so that values
-		// that cannot fit as i64 are rejected unless explicitly typed larger.
-		if err := checkIntRange(n, 64, true); err != nil {
-			return nil, fmt.Errorf("integer literal %s: %w", e.Token.Literal, err)
-		}
+		// §3.1: integer literals have no inherent size limit; range-check is
+		// deferred until a type is determined. If the literal remains at its
+		// default i64 type (no `as`/adoption into a wider target), finalization
+		// at the binding level enforces the i64 range.
 		return &Value{Kind: KindInt, Int: n, Type: &TypeInfo{BaseType: "i64", BitSize: 64, Signed: true}, Adoptable: true}, nil
 
 	case token.FloatLit:
@@ -86,6 +85,48 @@ func (ev *Evaluator) evalLiteral(e *ast.LiteralExpr) (*Value, error) {
 	default:
 		return nil, fmt.Errorf("unexpected literal token: %v", e.Token.Type)
 	}
+}
+
+// enforceDefaultIntRange walks v and checks that any integer value still at
+// the default i64 type (Adoptable, not narrowed by `as`) fits in the i64
+// range. §3.1 allows arbitrary-magnitude literals only when retargeted to a
+// wider integer type via `as`; anything landing on default i64 must fit.
+func enforceDefaultIntRange(v *Value) error {
+	if v == nil {
+		return nil
+	}
+	if v.Kind == KindInt && v.Adoptable && v.Type != nil && v.Type.BaseType == "i64" {
+		if err := checkIntRange(v.Int, 64, true); err != nil {
+			return fmt.Errorf("integer literal %s: %w", v.Int.String(), err)
+		}
+	}
+	switch v.Kind {
+	case KindList:
+		if v.List != nil {
+			for _, e := range v.List.Elements {
+				if err := enforceDefaultIntRange(e); err != nil {
+					return err
+				}
+			}
+		}
+	case KindTuple:
+		if v.Tuple != nil {
+			for _, e := range v.Tuple.Elements {
+				if err := enforceDefaultIntRange(e); err != nil {
+					return err
+				}
+			}
+		}
+	case KindStruct:
+		if v.Struct != nil {
+			for _, f := range v.Struct.Fields {
+				if err := enforceDefaultIntRange(f.Value); err != nil {
+					return err
+				}
+			}
+		}
+	}
+	return nil
 }
 
 func (ev *Evaluator) evalIdent(e *ast.IdentExpr, scope *Scope) (*Value, error) {

@@ -297,7 +297,7 @@ func (ev *Evaluator) evalAs(e *ast.AsExpr, scope *Scope) (*Value, error) {
 				}
 				// §6.3: untyped literals adopt the expected field type and are range-checked.
 				if actual.Adoptable && ef.Value.Type != nil && ef.Value.Type.BaseType != "" {
-					if actual.Kind == KindInt && isIntegerType(ef.Value.Type.BaseType) && ef.Value.Type.BitSize > 0 {
+					if actual.Kind == KindInt && isIntegerType(ef.Value.Type.BaseType) {
 						if err := checkIntRange(actual.Int, ef.Value.Type.BitSize, ef.Value.Type.Signed); err != nil {
 							return nil, fmt.Errorf("as %s: field %q: %w", ti.Name, ef.Name, err)
 						}
@@ -411,7 +411,7 @@ func (ev *Evaluator) evalAs(e *ast.AsExpr, scope *Scope) (*Value, error) {
 	}
 
 	// Numeric range validation for "as" annotation
-	if val.Kind == KindInt && ti.BitSize > 0 && isIntegerType(ti.BaseType) {
+	if val.Kind == KindInt && isIntegerType(ti.BaseType) {
 		if err := checkIntRange(val.Int, ti.BitSize, ti.Signed); err != nil {
 			return nil, fmt.Errorf("as %s: %w", ti.BaseType, err)
 		}
@@ -620,7 +620,7 @@ func adoptUntypedLiteral(original, override *Value, fieldName string) error {
 		return nil
 	}
 	switch {
-	case override.Kind == KindInt && isIntegerType(original.Type.BaseType) && original.Type.BitSize > 0:
+	case override.Kind == KindInt && isIntegerType(original.Type.BaseType):
 		if err := checkIntRange(override.Int, original.Type.BitSize, original.Type.Signed); err != nil {
 			return fmt.Errorf("field %q: %w", fieldName, err)
 		}

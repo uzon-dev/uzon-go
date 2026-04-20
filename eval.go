@@ -307,6 +307,12 @@ func (ev *Evaluator) evalBindings(bindings []*ast.Binding, scope *Scope) (*Value
 			return nil, &PosError{Pos: b.Position, Msg: fmt.Sprintf("binding %q: empty list requires type annotation (e.g. [] as [i32])", b.Name)}
 		}
 
+		// §3.1: integer literals have no inherent size limit, but any literal
+		// that settles at the default i64 type must fit in i64.
+		if err := enforceDefaultIntRange(v); err != nil {
+			return nil, &PosError{Pos: b.Position, Msg: fmt.Sprintf("binding %q", b.Name), Cause: err}
+		}
+
 		// Bare identifier that was not resolved by "as"/"from" is undefined (§5.12)
 		if v.Type != nil && v.Type.Name == "__ident__" {
 			v = Undefined()

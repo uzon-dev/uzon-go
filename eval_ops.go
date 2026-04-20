@@ -608,7 +608,7 @@ func (ev *Evaluator) intArith(op token.Type, a, b *big.Int, ti *TypeInfo) (*Valu
 		return nil, fmt.Errorf("unknown arithmetic op: %v", op)
 	}
 	// §5.3: check overflow for typed integer arithmetic
-	if ti != nil && ti.BitSize > 0 && isIntegerType(ti.BaseType) {
+	if ti != nil && isIntegerType(ti.BaseType) {
 		if err := checkIntRange(r, ti.BitSize, ti.Signed); err != nil {
 			return nil, fmt.Errorf("integer overflow: %w", err)
 		}
@@ -814,7 +814,7 @@ func (ev *Evaluator) evalUnary(e *ast.UnaryExpr, scope *Scope) (*Value, error) {
 	case token.Minus:
 		if operand.Kind == KindInt {
 			negated := new(big.Int).Neg(operand.Int)
-			if operand.Type != nil && operand.Type.BitSize > 0 && isIntegerType(operand.Type.BaseType) {
+			if operand.Type != nil && isIntegerType(operand.Type.BaseType) {
 				if err := checkIntRange(negated, operand.Type.BitSize, operand.Type.Signed); err != nil {
 					return nil, fmt.Errorf("unary negation: %w", err)
 				}

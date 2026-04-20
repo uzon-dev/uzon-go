@@ -317,7 +317,7 @@ func (ev *Evaluator) evalVariantShorthand(e *ast.VariantShorthandExpr, scope *Sc
 		return nil, typeErrorf("variant shorthand %q: nullary variant cannot take inner value of kind %s", e.Name, inner.Kind)
 	}
 	if inner.Adoptable && match.Type != nil && match.Type.BaseType != "" {
-		if inner.Kind == KindInt && isIntegerType(match.Type.BaseType) && match.Type.BitSize > 0 {
+		if inner.Kind == KindInt && isIntegerType(match.Type.BaseType) {
 			if err := checkIntRange(inner.Int, match.Type.BitSize, match.Type.Signed); err != nil {
 				return nil, fmt.Errorf("variant shorthand %q: %w", e.Name, err)
 			}
@@ -518,7 +518,7 @@ func (ev *Evaluator) evalListElemWithType(el ast.Expr, scope *Scope, elemTi *Typ
 		return nil, err
 	}
 	if v.Adoptable && elemTi.BaseType != "" {
-		if v.Kind == KindInt && isIntegerType(elemTi.BaseType) && elemTi.BitSize > 0 {
+		if v.Kind == KindInt && isIntegerType(elemTi.BaseType) {
 			if err := checkIntRange(v.Int, elemTi.BitSize, elemTi.Signed); err != nil {
 				return nil, err
 			}
@@ -577,7 +577,7 @@ func (ev *Evaluator) fieldExpectedType(def *Value) *TypeInfo {
 // evalStructWithType (which handles defaults).
 func (ev *Evaluator) adoptFieldValue(def *Value, val *Value, fieldName, typeName string) (*Value, error) {
 	if val.Adoptable && def.Type != nil && def.Type.BaseType != "" {
-		if val.Kind == KindInt && isIntegerType(def.Type.BaseType) && def.Type.BitSize > 0 {
+		if val.Kind == KindInt && isIntegerType(def.Type.BaseType) {
 			if err := checkIntRange(val.Int, def.Type.BitSize, def.Type.Signed); err != nil {
 				return nil, fmt.Errorf("as %s: field %q: %w", typeName, fieldName, err)
 			}
