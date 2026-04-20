@@ -243,6 +243,14 @@ func (ev *Evaluator) evalEquality(left, right *Value, negated bool) (*Value, err
 	}
 	// §5.2: comparing structs with different shapes
 	if left.Kind == KindStruct && right.Kind == KindStruct {
+		// §7.3: same-named types declared in different files are distinct
+		// nominal types. Two struct values of distinct nominal types cannot
+		// be compared even when their field layouts match.
+		if left.Type != nil && right.Type != nil &&
+			left.Type.Name != "" && right.Type.Name != "" &&
+			!sameNominalType(left.Type, right.Type) {
+			return nil, typeErrorf("cannot compare values of distinct named types %q and %q", left.Type.Name, right.Type.Name)
+		}
 		if len(left.Struct.Fields) != len(right.Struct.Fields) {
 			return nil, typeErrorf("cannot compare structs with different shapes")
 		}
@@ -259,12 +267,22 @@ func (ev *Evaluator) evalEquality(left, right *Value, negated bool) (*Value, err
 				len(left.Tuple.Elements), len(right.Tuple.Elements))
 		}
 	}
-	// §5.2: lists with different element types are a type error
+	// §5.2: lists with different element types are a type error. When an
+	// explicit element type is missing, fall back to the runtime kind of the
+	// first element — two non-empty lists whose first elements have different
+	// kinds cannot have the same element type, regardless of annotation.
 	if left.Kind == KindList && right.Kind == KindList {
 		if left.List.ElementType != nil && right.List.ElementType != nil &&
 			left.List.ElementType.BaseType != right.List.ElementType.BaseType {
 			return nil, typeErrorf("cannot compare lists with different element types (%s vs %s)",
 				left.List.ElementType.BaseType, right.List.ElementType.BaseType)
+		}
+		if len(left.List.Elements) > 0 && len(right.List.Elements) > 0 {
+			lk := left.List.Elements[0].Kind
+			rk := right.List.Elements[0].Kind
+			if lk != rk && lk != KindNull && rk != KindNull {
+				return nil, typeErrorf("cannot compare lists with different element types (%s vs %s)", lk, rk)
+			}
 		}
 	}
 
@@ -628,6 +646,41 @@ func (ev *Evaluator) floatArith(op token.Type, left, right *Value, ti *TypeInfo)
 	}
 	a, b := left.Float, right.Float
 	r := new(big.Float).SetPrec(53)
+	// §5.3: avoid big.Float panics on IEEE-754 indeterminate forms involving
+	// infinities. We delegate these cases to math.Float64 arithmetic, which
+	// produces the IEEE-754 correct nan/inf result.
+	if a.IsInf() || b.IsInf() {
+		af, _ := a.Float64()
+		bf, _ := b.Float64()
+		var result float64
+		switch op {
+		case token.Plus:
+			result = af + bf
+		case token.Minus:
+			result = af - bf
+		case token.Star:
+			result = af * bf
+		case token.Slash:
+			result = af / bf
+		case token.Percent:
+			result = math.Mod(af, bf)
+		case token.Caret:
+			result = math.Pow(af, bf)
+		default:
+			return nil, fmt.Errorf("unknown arithmetic op: %v", op)
+		}
+		if math.IsNaN(result) {
+			return nanResult(), nil
+		}
+		if math.IsInf(result, 1) {
+			r.SetInf(false)
+		} else if math.IsInf(result, -1) {
+			r.SetInf(true)
+		} else {
+			r.SetFloat64(result)
+		}
+		return &Value{Kind: KindFloat, Float: r, Type: ti}, nil
+	}
 	switch op {
 	case token.Plus:
 		r.Add(a, b)
@@ -691,6 +744,13 @@ func (ev *Evaluator) evalConcat(left, right *Value) (*Value, error) {
 			rk := right.List.Elements[0].Kind
 			if lk != KindNull && rk != KindNull && lk != rk {
 				return nil, fmt.Errorf("++ list element type mismatch: %s vs %s", lk, rk)
+			}
+		}
+		// §5.8.2: list element types MUST match exactly.
+		if left.List.ElementType != nil && right.List.ElementType != nil {
+			if left.List.ElementType.TypeKey() != right.List.ElementType.TypeKey() {
+				return nil, typeErrorf("++ list element type mismatch: [%s] vs [%s]",
+					left.List.ElementType.TypeKey(), right.List.ElementType.TypeKey())
 			}
 		}
 		elems := make([]*Value, 0, len(left.List.Elements)+len(right.List.Elements))
@@ -1111,15 +1171,17 @@ func typeInfosMatch(a, b *TypeInfo) bool {
 // undefined is compatible with any type (§5.9 R8 — symmetric narrowing
 // permits a branch to surface the undefined inhabitant).
 // §5: adoptable int literal is compatible with float (cross-category adoption).
+// §7.3: when both sides carry a nominal type, the declaring-file origin
+// must match — same-named types from different files are distinct.
 func branchTypesCompatible(a, b *Value) bool {
-	if a.Kind == b.Kind {
-		return true
-	}
 	if a.Kind == KindNull || b.Kind == KindNull {
 		return true
 	}
 	if a.Kind == KindUndefined || b.Kind == KindUndefined {
 		return true
+	}
+	if a.Kind == b.Kind {
+		return nominallyCompatible(a, b)
 	}
 	// §5: int literal can adopt float type
 	if a.Kind == KindInt && b.Kind == KindFloat && a.Adoptable {
@@ -1129,6 +1191,20 @@ func branchTypesCompatible(a, b *Value) bool {
 		return true
 	}
 	return false
+}
+
+// nominallyCompatible enforces §7.3 cross-file nominal identity: when
+// both values carry a named type, the Name and Origin must both match.
+// Values without a nominal type (anonymous structs, primitives) are
+// always considered compatible here.
+func nominallyCompatible(a, b *Value) bool {
+	if a.Type == nil || b.Type == nil {
+		return true
+	}
+	if a.Type.Name == "" || b.Type.Name == "" {
+		return true
+	}
+	return sameNominalType(a.Type, b.Type)
 }
 
 // leftTypeMatchesRightKind checks whether a left-hand TypeInfo (typically
@@ -1159,6 +1235,7 @@ func leftTypeMatchesRightKind(lt *TypeInfo, right *Value) bool {
 
 // operandTypesCompatible checks if two values have compatible types for operators
 // like "or else" that require same type. null and undefined are exempt.
+// §7.3: when both sides carry a nominal type, declaring-file origin must match.
 func operandTypesCompatible(left, right *Value) bool {
 	if right.Kind == KindUndefined || isUnresolvedIdent(right) {
 		return true
@@ -1167,7 +1244,7 @@ func operandTypesCompatible(left, right *Value) bool {
 		return true
 	}
 	if left.Kind == right.Kind {
-		return true
+		return nominallyCompatible(left, right)
 	}
 	// §5: int literal can adopt float type
 	if left.Kind == KindInt && right.Kind == KindFloat && left.Adoptable {

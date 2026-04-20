@@ -331,6 +331,11 @@ func (p *Parser) parseListLiteral() Expr {
 		}
 	}
 	p.expect(token.RBrack)
+	for _, el := range elems {
+		if _, isUndef := el.(*UndefinedExpr); isUndef {
+			p.errorf(el.Pos(), "literal 'undefined' is not permitted as a list element (§4.5)")
+		}
+	}
 	return &ListExpr{Elements: elems, Position: pos}
 }
 
@@ -372,5 +377,10 @@ func (p *Parser) parseTupleOrGroup() Expr {
 	}
 
 	p.expect(token.RParen)
+	for _, el := range elems {
+		if _, isUndef := el.(*UndefinedExpr); isUndef {
+			p.errorf(el.Pos(), "literal 'undefined' is not permitted as a tuple element (§4.5)")
+		}
+	}
 	return &TupleExpr{Elements: elems, Position: pos}
 }

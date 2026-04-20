@@ -283,6 +283,11 @@ func (p *Parser) parseAreExpr() Expr {
 		elems[len(elems)-1] = last.Value
 	}
 
+	for _, el := range elems {
+		if _, isUndef := el.(*UndefinedExpr); isUndef {
+			p.errorf(el.Pos(), "literal 'undefined' is not permitted as an are-binding element (§4.5)")
+		}
+	}
 	return &AreExpr{Elements: elems, TypeAnnotation: typeAnn, Position: pos}
 }
 

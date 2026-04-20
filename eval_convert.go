@@ -42,7 +42,10 @@ func (ev *Evaluator) evalTo(e *ast.ToExpr, scope *Scope) (*Value, error) {
 	}
 
 	// §5.11: "to bool" only allows identity (bool to bool) — type error for all others.
-	if ti != nil && ti.BaseType == "bool" && val.Kind != KindBool {
+	if ti != nil && ti.BaseType == "bool" {
+		if val.Kind == KindBool {
+			return val, nil
+		}
 		return nil, typeErrorf("cannot convert %s to bool", val.Kind)
 	}
 
@@ -152,6 +155,17 @@ func (ev *Evaluator) convertToString(val *Value) (*Value, error) {
 	}
 }
 
+// formatFloat implements §5.11.2 float-to-string conversion: shortest
+// round-trip decimal with format chosen by the exponent n (where
+// value = digits × 10^(n-k), k = significant digit count):
+//   - 0 < n ≤ 21:  plain decimal notation (e.g. "3.14", "10000000.0")
+//   - −6 < n ≤ 0:  plain with leading zeros (e.g. "0.000001")
+//   - otherwise:   scientific "d.dddeN" with one digit before the
+//                  decimal point and no explicit "+" on a positive
+//                  exponent (e.g. "1.0e100", "3.0e-8")
+//
+// The result always contains a decimal point to distinguish floats from
+// integers. Negative zero is preserved as "-0.0".
 func formatFloat(f float64) string {
 	if math.IsInf(f, 1) {
 		return "inf"
@@ -162,11 +176,45 @@ func formatFloat(f float64) string {
 	if math.IsNaN(f) {
 		return "nan"
 	}
-	s := strconv.FormatFloat(f, 'g', -1, 64)
-	if !strings.Contains(s, ".") && !strings.Contains(s, "e") && !strings.Contains(s, "E") {
-		s += ".0"
+	if f == 0 {
+		if math.Signbit(f) {
+			return "-0.0"
+		}
+		return "0.0"
 	}
-	return s
+
+	sign := ""
+	if f < 0 {
+		sign = "-"
+		f = -f
+	}
+
+	// Extract shortest round-trip digits and base-10 exponent via 'e'
+	// format, which always produces "d[.ddd]e±dd".
+	s := strconv.FormatFloat(f, 'e', -1, 64)
+	eIdx := strings.IndexByte(s, 'e')
+	mantissa := s[:eIdx]
+	exp, _ := strconv.Atoi(s[eIdx+1:])
+	digits := strings.ReplaceAll(mantissa, ".", "")
+	k := len(digits)
+	n := exp + 1
+
+	if n > 0 && n <= 21 {
+		if k <= n {
+			return sign + digits + strings.Repeat("0", n-k) + ".0"
+		}
+		return sign + digits[:n] + "." + digits[n:]
+	}
+	if n > -6 && n <= 0 {
+		return sign + "0." + strings.Repeat("0", -n) + digits
+	}
+	var mant string
+	if k == 1 {
+		mant = digits + ".0"
+	} else {
+		mant = digits[:1] + "." + digits[1:]
+	}
+	return sign + mant + "e" + strconv.Itoa(n-1)
 }
 
 func (ev *Evaluator) convertToInt(val *Value, target *TypeInfo) (*Value, error) {

@@ -71,9 +71,105 @@ func NewLexer(src []byte, file string) *Lexer {
 	}
 	if !utf8.Valid(src) {
 		l.errorf(firstInvalidUTF8Pos(src, file), "invalid UTF-8 encoding")
+	} else {
+		l.validateSourceChars()
 	}
 	l.advance()
 	return l
+}
+
+// validateSourceChars enforces §2.3 character restrictions on the raw source:
+//   - Control characters U+0000–U+001F and U+007F (except LF, CR, HT) MUST
+//     be rejected anywhere in source — inside strings, comments, and
+//     identifiers alike.
+//   - RTL and bidi marks (U+200E, U+200F, U+202A–U+202E, U+2066–U+2069)
+//     MUST be rejected outside string literals.
+//
+// A minimal state machine tracks line comments and string literals so that
+// bidi marks inside string content are accepted while marks in surrounding
+// code (including comments) are rejected. Escaped `\"` inside strings does
+// not close the string.
+func (l *Lexer) validateSourceChars() {
+	line, col := 1, 1
+	inString := false
+	inLineComment := false
+	i := 0
+	for i < len(l.src) {
+		r, size := utf8.DecodeRune(l.src[i:])
+		pos := Pos{File: l.file, Line: line, Column: col, Offset: i}
+
+		if isForbiddenControl(r) {
+			l.errorf(pos, "control character U+%04X is not allowed in source", r)
+		}
+		if !inString && isBidiMark(r) {
+			l.errorf(pos, "bidi/directional mark U+%04X is not allowed outside string literals", r)
+		}
+
+		if inLineComment {
+			if r == '\n' {
+				inLineComment = false
+			}
+		} else if inString {
+			if r == '\\' && i+size < len(l.src) {
+				// Skip the escaped character so \" does not close the string.
+				nr, nsize := utf8.DecodeRune(l.src[i+size:])
+				if isForbiddenControl(nr) {
+					npos := Pos{File: l.file, Line: line, Column: col + 1, Offset: i + size}
+					l.errorf(npos, "control character U+%04X is not allowed in source", nr)
+				}
+				if nr == '\n' {
+					line++
+					col = 1
+				} else {
+					col += 2
+				}
+				i += size + nsize
+				continue
+			}
+			if r == '"' {
+				inString = false
+			}
+		} else {
+			if r == '"' {
+				inString = true
+			} else if r == '/' && i+1 < len(l.src) && l.src[i+1] == '/' {
+				inLineComment = true
+			}
+		}
+
+		if r == '\n' {
+			line++
+			col = 1
+		} else {
+			col++
+		}
+		i += size
+	}
+}
+
+// isForbiddenControl reports whether r is a control character that §2.3
+// forbids in source. LF, CR, and HT are permitted.
+func isForbiddenControl(r rune) bool {
+	if r == '\n' || r == '\r' || r == '\t' {
+		return false
+	}
+	return r <= 0x1F || r == 0x7F
+}
+
+// isBidiMark reports whether r is an RTL or bidi directional mark that
+// §2.3 forbids outside string literals.
+func isBidiMark(r rune) bool {
+	switch r {
+	case 0x200E, 0x200F:
+		return true
+	}
+	if r >= 0x202A && r <= 0x202E {
+		return true
+	}
+	if r >= 0x2066 && r <= 0x2069 {
+		return true
+	}
+	return false
 }
 
 // firstInvalidUTF8Pos locates the position of the first invalid UTF-8

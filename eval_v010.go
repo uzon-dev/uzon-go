@@ -262,6 +262,9 @@ func (ev *Evaluator) evalAsWithContext(e *ast.AsExpr, ti *TypeInfo, scope *Scope
 			return nil, false, nil
 		}
 		elemTi := ev.resolveTypeExpr(e.TypeExpr.ListElem)
+		if err := ev.checkElemTypeResolvable(elemTi, e.TypeExpr.ListElem); err != nil {
+			return nil, true, err
+		}
 		val, err := ev.evalListWithType(v, scope, elemTi)
 		if err != nil {
 			return nil, true, err
@@ -275,6 +278,9 @@ func (ev *Evaluator) evalAsWithContext(e *ast.AsExpr, ti *TypeInfo, scope *Scope
 			return nil, false, nil
 		}
 		elemTi := ev.resolveTypeExpr(e.TypeExpr.ListElem)
+		if err := ev.checkElemTypeResolvable(elemTi, e.TypeExpr.ListElem); err != nil {
+			return nil, true, err
+		}
 		val, err := ev.evalAreWithType(v, scope, elemTi)
 		if err != nil {
 			return nil, true, err
@@ -382,6 +388,36 @@ func (ev *Evaluator) tryResolveNullaryShorthand(name string, ti *TypeInfo) *Valu
 		return result
 	}
 	return nil
+}
+
+// checkElemTypeResolvable validates that a list/tuple element type name is
+// known (§6.2) — registered, builtin, enum, tagged union, or nested compound.
+// Returning a "unknown type" error here also closes the §6.4 direct
+// self-recursive type gap (e.g. `Tree is struct { children is [] as [Tree] }`),
+// since the binding's own name is not registered until its value resolves.
+func (ev *Evaluator) checkElemTypeResolvable(elemTi *TypeInfo, te *ast.TypeExpr) error {
+	if elemTi == nil || te == nil {
+		return nil
+	}
+	if elemTi.BaseType != "" || elemTi.Name == "" {
+		return nil
+	}
+	if len(te.Path) == 0 {
+		return nil
+	}
+	if _, ok := ev.types.get(te.Path); ok {
+		return nil
+	}
+	if _, ok := ev.enums.get(elemTi.Name); ok {
+		return nil
+	}
+	if _, ok := ev.taggedVariants.get(elemTi.Name); ok {
+		return nil
+	}
+	if parseBuiltinType(elemTi.Name) != nil {
+		return nil
+	}
+	return typeErrorf("unknown type %q", elemTi.Name)
 }
 
 // taggedVariantsForType returns the variant list for a tagged union type, or

@@ -60,6 +60,9 @@ func (p *Parser) parseCaseExpr() Expr {
 		}
 		p.expect(token.Then)
 		wc.Then = p.parseExpression()
+		if _, isUndef := wc.Then.(*UndefinedExpr); isUndef {
+			p.errorf(wc.Then.Pos(), "literal 'undefined' is not permitted in 'then' branch position (§4.5)")
+		}
 		whens = append(whens, wc)
 	}
 
@@ -69,6 +72,9 @@ func (p *Parser) parseCaseExpr() Expr {
 
 	p.expect(token.Else)
 	els := p.parseExpression()
+	if _, isUndef := els.(*UndefinedExpr); isUndef {
+		p.errorf(els.Pos(), "literal 'undefined' is not permitted in 'else' branch position (§4.5)")
+	}
 
 	return &CaseExpr{Mode: mode, Scrutinee: scrutinee, Whens: whens, Else: els, Position: pos}
 }
@@ -111,6 +117,7 @@ func (p *Parser) parseEnumDecl() Expr {
 	for p.match(token.Comma) {
 		if p.isBindingStart() || p.at(token.RBrace) || p.at(token.RParen) ||
 			p.at(token.RBrack) || p.at(token.EOF) || p.at(token.Called) {
+			p.errorf(p.prev.Pos, "trailing comma not permitted in enum variant list (§8)")
 			break
 		}
 		variants = append(variants, p.parseNameOrKeyword())
@@ -137,6 +144,7 @@ func (p *Parser) parseUnionDecl() Expr {
 	for p.match(token.Comma) {
 		if p.isBindingStart() || p.at(token.RBrace) || p.at(token.RParen) ||
 			p.at(token.RBrack) || p.at(token.EOF) || p.at(token.Called) {
+			p.errorf(p.prev.Pos, "trailing comma not permitted in union member list (§8)")
 			break
 		}
 		types = append(types, p.parseTypeExpr())
@@ -173,6 +181,7 @@ func (p *Parser) parseTaggedUnionDecl() Expr {
 		}
 		if p.isBindingStart() || p.at(token.RBrace) || p.at(token.RParen) ||
 			p.at(token.RBrack) || p.at(token.EOF) || p.at(token.Called) {
+			p.errorf(p.prev.Pos, "trailing comma not permitted in tagged union variant list (§8)")
 			break
 		}
 	}

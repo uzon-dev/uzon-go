@@ -110,10 +110,27 @@ type TypeInfo struct {
 	BitSize  int      // for numeric types: bit width (e.g. 32 for i32)
 	Signed   bool     // for integer types: true if signed (iN), false if unsigned (uN)
 	Path     []string // qualified type path segments (e.g. ["inner", "RGB"])
+	// Origin identifies the file this named type was declared in (§7.3).
+	// Empty for builtins and for types declared in the top-level file. Two
+	// named types with the same Name but different Origin are distinct.
+	Origin string
 
 	// Compound type info (§v0.8)
 	ListElemType  *TypeInfo   // for [T] list types
 	TupleElemTypes []*TypeInfo // for (T, T) tuple types
+}
+
+// sameNominalType reports whether two named types refer to the same
+// nominal type per §6.2/§7.3. Matches when Name is equal and Origin
+// (the declaring file) is also equal; empty Name never matches.
+func sameNominalType(a, b *TypeInfo) bool {
+	if a == nil || b == nil {
+		return false
+	}
+	if a.Name == "" || b.Name == "" {
+		return false
+	}
+	return a.Name == b.Name && a.Origin == b.Origin
 }
 
 // TypeKey returns a unique string representation for deduplication.

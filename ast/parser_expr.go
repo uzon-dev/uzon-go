@@ -246,6 +246,7 @@ func (p *Parser) parseFromClause(value Expr) Expr {
 		types = append(types, p.parseTypeExpr())
 		for p.match(token.Comma) {
 			if p.isBindingStart() || p.at(token.RBrace) || p.at(token.RParen) || p.at(token.RBrack) || p.at(token.EOF) {
+				p.errorf(p.prev.Pos, "trailing comma not permitted in from-union member list (§8)")
 				break
 			}
 			types = append(types, p.parseTypeExpr())
@@ -258,6 +259,7 @@ func (p *Parser) parseFromClause(value Expr) Expr {
 	variants = append(variants, p.parseNameOrKeyword())
 	for p.match(token.Comma) {
 		if p.isBindingStart() || p.at(token.RBrace) || p.at(token.RParen) || p.at(token.RBrack) || p.at(token.EOF) || p.at(token.Called) {
+			p.errorf(p.prev.Pos, "trailing comma not permitted in from-variant list (§8)")
 			break
 		}
 		variants = append(variants, p.parseNameOrKeyword())

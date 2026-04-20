@@ -232,10 +232,21 @@ func (ev *Evaluator) evalAs(e *ast.AsExpr, scope *Scope) (*Value, error) {
 	ti := ev.resolveTypeExpr(e.TypeExpr)
 
 	// v0.10: type-context-aware evaluation for shapes that benefit from it.
+	// (variant shorthand, nullary shorthand, named struct construction, etc.)
 	if ctxVal, handled, err := ev.evalAsWithContext(e, ti, scope); err != nil {
 		return nil, err
 	} else if handled {
 		return ctxVal, nil
+	}
+
+	// §6.3: `as <TaggedUnion>` without `named <variant>` is a type error.
+	// Variant-shorthand and nullary forms are consumed by evalAsWithContext
+	// above, so any AsExpr that reaches here and targets a tagged union is a
+	// bare cast missing its `named <variant>` clause.
+	if ti != nil && ti.Name != "" && ti.BaseType == "" {
+		if _, isTU := ev.taggedVariants.get(ti.Name); isTU {
+			return nil, typeErrorf("`as %s` requires `named <variant>` to specify the active variant (§6.3)", ti.Name)
+		}
 	}
 
 	val, err := ev.evalExpr(e.Value, scope)
@@ -287,21 +298,23 @@ func (ev *Evaluator) evalAs(e *ast.AsExpr, scope *Scope) (*Value, error) {
 		}
 	}
 
-	// §3.2.1 rule 5 / §6.2: nominal identity for enums — an enum value
-	// already belonging to a named enum type cannot be annotated as a
-	// different named enum, even if variants overlap structurally.
-	if val.Kind == KindEnum && ti.Name != "" && val.Type != nil && val.Type.Name != "" && val.Type.Name != ti.Name {
+	// §3.2.1 rule 5 / §6.2 / §7.3: nominal identity for enums — an enum
+	// value already belonging to a named enum type cannot be annotated as
+	// a different named enum, even if variants overlap structurally or
+	// share a name across files.
+	if val.Kind == KindEnum && ti.Name != "" && val.Type != nil && val.Type.Name != "" && !sameNominalType(val.Type, ti) {
 		if _, ok := ev.enums.get(ti.Name); ok {
-			return nil, typeErrorf("cannot annotate enum of named type %q as %q (nominal identity)", val.Type.Name, ti.Name)
+			return nil, typeErrorf("cannot annotate enum of named type %q as %q (nominal identity)", val.Type.Name, typeExprName(e.TypeExpr, ti))
 		}
 	}
 
 	// §6.3: struct shape and type compatibility
 	if val.Kind == KindStruct && ti.Name != "" {
-		// §3.2.1 rule 5 / §6.2: nominal identity. If the value already has
-		// a different named type, the assertion is a type error.
-		if val.Type != nil && val.Type.Name != "" && val.Type.Name != ti.Name {
-			return nil, typeErrorf("cannot annotate value of named type %q as %q (nominal identity)", val.Type.Name, ti.Name)
+		// §3.2.1 rule 5 / §6.2 / §7.3: nominal identity. If the value
+		// already has a different named type (including same-named types
+		// declared in a different file), the assertion is a type error.
+		if val.Type != nil && val.Type.Name != "" && !sameNominalType(val.Type, ti) {
+			return nil, typeErrorf("cannot annotate value of named type %q as %q (nominal identity)", val.Type.Name, typeExprName(e.TypeExpr, ti))
 		}
 		if expectedFields, ok := ev.structShapes.get(ti.Name); ok {
 			if len(val.Struct.Fields) != len(expectedFields) {
@@ -1058,18 +1071,44 @@ func (ev *Evaluator) evalNamed(e *ast.NamedExpr, scope *Scope) (*Value, error) {
 			seen[v.Name] = true
 		}
 	}
-	val, err := ev.evalExpr(e.Value, scope)
-	if err != nil {
-		return nil, err
+
+	var val *Value
+	var err error
+	var reusedTypeName string // saved before inner type adoption overwrites it
+
+	// §6.3 reuse path: `value as TaggedUnion named tag`. Evaluate the inner
+	// value directly so that evalAs can reject a bare `as TaggedUnion` (§6.3)
+	// without breaking this legal construction.
+	if ae, ok := e.Value.(*ast.AsExpr); ok && len(e.Variants) == 0 {
+		ti := ev.resolveTypeExpr(ae.TypeExpr)
+		if ti != nil && ti.Name != "" {
+			if _, isTU := ev.taggedVariants.get(ti.Name); isTU {
+				val, err = ev.evalExpr(ae.Value, scope)
+				if err != nil {
+					return nil, err
+				}
+				reusedTypeName = ti.Name
+			}
+		}
+	}
+	if val == nil {
+		val, err = ev.evalExpr(e.Value, scope)
+		if err != nil {
+			return nil, err
+		}
 	}
 
 	var variants []TaggedVariant
-	var reusedTypeName string // saved before inner type adoption overwrites it
 	if len(e.Variants) == 0 {
-		// Reuse registered type
-		if val.Type != nil && val.Type.Name != "" {
-			reusedTypeName = val.Type.Name
-			if registered, ok := ev.taggedVariants.get(val.Type.Name); ok {
+		// Reuse registered type — either pre-resolved above via AsExpr, or
+		// inherited from a prior binding's Type.
+		typeName := reusedTypeName
+		if typeName == "" && val.Type != nil && val.Type.Name != "" {
+			typeName = val.Type.Name
+		}
+		if typeName != "" {
+			reusedTypeName = typeName
+			if registered, ok := ev.taggedVariants.get(typeName); ok {
 				variants = registered
 				found := false
 				for _, v := range variants {
@@ -1079,7 +1118,7 @@ func (ev *Evaluator) evalNamed(e *ast.NamedExpr, scope *Scope) (*Value, error) {
 					}
 				}
 				if !found {
-					return nil, fmt.Errorf("'%s' is not a variant of %s", e.Tag, val.Type.Name)
+					return nil, fmt.Errorf("'%s' is not a variant of %s", e.Tag, typeName)
 				}
 			}
 		}
@@ -1094,6 +1133,10 @@ func (ev *Evaluator) evalNamed(e *ast.NamedExpr, scope *Scope) (*Value, error) {
 	if len(variants) > 0 {
 		for _, v := range variants {
 			if v.Name == e.Tag && v.Type != nil {
+				// §6.1 R6: null fits only a null-typed variant.
+				if val.Kind == KindNull && v.Type.BaseType != "null" {
+					return nil, typeErrorf("null cannot be assigned to variant %q (inner type %s)", v.Name, v.Type.TypeKey())
+				}
 				if val.Adoptable || unionMemberCompatible(val, v.Type) {
 					val.Type = v.Type
 					val.Adoptable = false
@@ -1294,12 +1337,17 @@ func (ev *Evaluator) evalStructImport(e *ast.StructImportExpr) (*Value, error) {
 		return nil, &PosError{Pos: e.Position, Msg: fmt.Sprintf("import %q", e.Path), Cause: err}
 	}
 
+	// §7.3: scope isolation — imported files must not inherit the importer's
+	// lexical scope or type registrations. Types declared in the importing
+	// file are distinct from same-named types in the imported file. The
+	// `imported`/`importing` maps are shared so that circular-import and
+	// diamond-dedup checks still apply across the whole file graph.
 	subEv := &Evaluator{
 		scope:          newScope(nil),
-		types:          newTypeRegistry(ev.types),
-		enums:          newEnumRegistry(ev.enums),
-		taggedVariants: newTaggedVariantRegistry(ev.taggedVariants),
-		structShapes:   newStructShapeRegistry(ev.structShapes),
+		types:          newTypeRegistry(nil),
+		enums:          newEnumRegistry(nil),
+		taggedVariants: newTaggedVariantRegistry(nil),
+		structShapes:   newStructShapeRegistry(nil),
 		env:            ev.env,
 		baseDir:        filepath.Dir(path),
 		imported:       ev.imported,
@@ -1309,6 +1357,16 @@ func (ev *Evaluator) evalStructImport(e *ast.StructImportExpr) (*Value, error) {
 	val, err := subEv.EvalDocument(doc)
 	if err != nil {
 		return nil, &PosError{Pos: e.Position, Msg: fmt.Sprintf("import %q", e.Path), Cause: err}
+	}
+
+	// §7.3: stamp each imported TypeInfo with the declaring file's canonical
+	// path so that same-named types in different files are nominally
+	// distinct. TypeInfo pointers are shared between the registry and the
+	// values that carry them, so setting Origin here propagates to values.
+	for _, ti := range subEv.types.types {
+		if ti != nil && ti.Origin == "" {
+			ti.Origin = path
+		}
 	}
 
 	// Capture inner types so they can be re-registered with qualified prefix.

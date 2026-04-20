@@ -123,12 +123,22 @@ func evalForDir(dir string) *Evaluator {
 }
 
 // forEachUZON recursively walks dir and calls fn for every .uzon file.
+// When a directory contains an `entry.uzon`, only that file is tested —
+// the other .uzon files are treated as importable modules whose standalone
+// validity is not under test.
 func forEachUZON(t *testing.T, dir string, fn func(*testing.T, string, []byte)) {
 	t.Helper()
 	entries, err := os.ReadDir(dir)
 	if err != nil {
 		t.Skipf("dir not found: %s", dir)
 		return
+	}
+	hasEntry := false
+	for _, e := range entries {
+		if !e.IsDir() && e.Name() == "entry.uzon" {
+			hasEntry = true
+			break
+		}
 	}
 	for _, e := range entries {
 		name := e.Name()
@@ -139,6 +149,9 @@ func forEachUZON(t *testing.T, dir string, fn func(*testing.T, string, []byte)) 
 			continue
 		}
 		if filepath.Ext(name) != ".uzon" {
+			continue
+		}
+		if hasEntry && name != "entry.uzon" {
 			continue
 		}
 		t.Run(name, func(t *testing.T) {

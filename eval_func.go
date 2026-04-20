@@ -99,7 +99,13 @@ func (ev *Evaluator) callFunction(fn *Value, args []*Value) (*Value, error) {
 		return nil, fmt.Errorf("invalid function body")
 	}
 
-	// Fill default values for missing arguments
+	// §3.8: arity check — too many arguments is a call error.
+	if len(args) > len(fe.Params) {
+		return nil, fmt.Errorf("too many arguments: function takes %d, got %d", len(fe.Params), len(args))
+	}
+
+	// Fill default values for missing arguments; a missing non-defaulted
+	// parameter is a call error (§3.8).
 	fullArgs := make([]*Value, 0, len(fe.Params))
 	fullArgs = append(fullArgs, args...)
 	for i := len(args); i < len(fe.Params); i++ {
@@ -109,6 +115,8 @@ func (ev *Evaluator) callFunction(fn *Value, args []*Value) (*Value, error) {
 				return nil, err
 			}
 			fullArgs = append(fullArgs, dv)
+		} else {
+			return nil, fmt.Errorf("missing argument %q: function expects %d, got %d", fe.Params[i].Name, len(fe.Params), len(args))
 		}
 	}
 
@@ -216,6 +224,24 @@ func (ev *Evaluator) callFunction(fn *Value, args []*Value) (*Value, error) {
 	if fv.ReturnType != nil && fv.ReturnType.Name != "" {
 		if result.Type != nil && result.Type.Name != "" && result.Type.Name != fv.ReturnType.Name {
 			return nil, fmt.Errorf("function return type mismatch: expected %s, got %s", fv.ReturnType.Name, result.Type.Name)
+		}
+	}
+
+	// §3.8: primitive return type check — body value kind must match declared
+	// return type. Adoptable numeric literals may still adopt the return type.
+	if fv.ReturnType != nil && fv.ReturnType.BaseType != "" {
+		rt := fv.ReturnType
+		if result.Adoptable && result.Kind == KindInt && isIntegerType(rt.BaseType) {
+			if err := checkIntRange(result.Int, rt.BitSize, rt.Signed); err != nil {
+				return nil, fmt.Errorf("function return: %w", err)
+			}
+			result.Type = rt
+			result.Adoptable = false
+		} else if result.Adoptable && (result.Kind == KindInt || result.Kind == KindFloat) && isFloatType(rt.BaseType) {
+			result.Type = rt
+			result.Adoptable = false
+		} else if !argTypeCompatible(result, rt) {
+			return nil, typeErrorf("function return type mismatch: expected %s, got %s", rt.BaseType, result.Kind)
 		}
 	}
 
