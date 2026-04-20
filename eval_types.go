@@ -507,19 +507,9 @@ func (ev *Evaluator) evalWith(e *ast.WithExpr, scope *Scope) (*Value, error) {
 		found := false
 		for i, f := range newFields {
 			if f.Name == ob.Name {
-				// §3.2.1: untyped literals adopt the existing field type and are range-checked.
-				if v.Adoptable && f.Value.Type != nil && f.Value.Type.BaseType != "" {
-					if v.Kind == KindInt && isIntegerType(f.Value.Type.BaseType) && f.Value.Type.BitSize > 0 {
-						if err := checkIntRange(v.Int, f.Value.Type.BitSize, f.Value.Type.Signed); err != nil {
-							return nil, fmt.Errorf("with: field %q: %w", ob.Name, err)
-						}
-						v.Type = f.Value.Type
-						v.Adoptable = false
-					} else if v.Kind == KindFloat && isFloatType(f.Value.Type.BaseType) {
-						v.Type = f.Value.Type
-						v.Adoptable = false
-					}
-				}
+				// §3.2.1: adoption (rule 2) and compat (rules 1/4/5) are
+				// performed by checkWithTypeCompat, including recursion
+				// into nested structs, lists, and tuples.
 				if err := ev.checkWithTypeCompat(f.Value, v, ob.Name); err != nil {
 					return nil, fmt.Errorf("with: %w", err)
 				}
@@ -539,11 +529,25 @@ func (ev *Evaluator) evalWith(e *ast.WithExpr, scope *Scope) (*Value, error) {
 	return &Value{Kind: KindStruct, Struct: &StructValue{Fields: newFields}, Type: base.Type}, nil
 }
 
-// checkWithTypeCompat validates type compatibility for with/plus overrides (§3.2.1).
+// checkWithTypeCompat validates type compatibility for with/plus overrides
+// (§3.2.1). It also performs §3.2.1 rule 2 untyped-literal adoption in
+// place — when override is an untyped literal and original carries a typed
+// primitive, override adopts that type and is range-checked.
 func (ev *Evaluator) checkWithTypeCompat(original, override *Value, fieldName string) error {
 	if override.Kind == KindNull || original.Kind == KindNull {
 		return nil
 	}
+	// §3.2.1 rule 2: untyped literals adopt the existing field type and are range-checked.
+	if err := adoptUntypedLiteral(original, override, fieldName); err != nil {
+		return err
+	}
+	// §3.2.1 rule 5: named types must match by Name.
+	origName := namedStructTypeName(original.Type)
+	overName := namedStructTypeName(override.Type)
+	if origName != "" && overName != "" && origName != overName {
+		return typeErrorf("field %q: named type %s incompatible with %s", fieldName, overName, origName)
+	}
+	// §3.2.1 rule 1: primitive types must match exactly.
 	if original.Type != nil && original.Type.BaseType != "" && original.Type.Name != "__ident__" {
 		if override.Type != nil && override.Type.BaseType != "" && override.Type.Name != "__ident__" {
 			if original.Type.BaseType != override.Type.BaseType {
@@ -554,7 +558,123 @@ func (ev *Evaluator) checkWithTypeCompat(original, override *Value, fieldName st
 	if original.Kind != override.Kind {
 		return typeErrorf("field %q: cannot override %s with %s", fieldName, original.Kind, override.Kind)
 	}
+	// §3.2.1 rule 4 / "no implicit deep merge": when overriding a nested
+	// struct, the replacement must have the same field set and field types.
+	// Field order does not matter; extra or missing fields are errors.
+	if original.Kind == KindStruct {
+		if len(original.Struct.Fields) != len(override.Struct.Fields) {
+			return typeErrorf("field %q: struct shape mismatch (%d fields vs %d)",
+				fieldName, len(override.Struct.Fields), len(original.Struct.Fields))
+		}
+		for _, of := range override.Struct.Fields {
+			ov := original.Struct.Get(of.Name)
+			if ov == nil {
+				return typeErrorf("field %q: unknown subfield %q", fieldName, of.Name)
+			}
+			if err := ev.checkWithTypeCompat(ov, of.Value, fieldName+"."+of.Name); err != nil {
+				return err
+			}
+		}
+	}
+	// §3.2.1 rule 1 + §3.4: list type is `[T]`; overrides must keep the
+	// same element type. Length may change (lists are variable-length),
+	// but each element must satisfy compat against the original's
+	// element type.
+	if original.Kind == KindList {
+		exemplar, exemplarType := listElementExemplar(original)
+		for i, oe := range override.List.Elements {
+			elemName := fmt.Sprintf("%s[%d]", fieldName, i)
+			if exemplar != nil {
+				if err := ev.checkWithTypeCompat(exemplar, oe, elemName); err != nil {
+					return err
+				}
+			} else if exemplarType != nil {
+				synth := syntheticTypedValue(exemplarType)
+				if synth != nil {
+					if err := ev.checkWithTypeCompat(synth, oe, elemName); err != nil {
+						return err
+					}
+				}
+			}
+		}
+	}
+	// §3.2.1 rule 1 + §3.3: tuples have fixed arity and per-position types.
+	if original.Kind == KindTuple {
+		if len(original.Tuple.Elements) != len(override.Tuple.Elements) {
+			return typeErrorf("field %q: tuple arity mismatch (%d vs %d)",
+				fieldName, len(override.Tuple.Elements), len(original.Tuple.Elements))
+		}
+		for i, oe := range override.Tuple.Elements {
+			if err := ev.checkWithTypeCompat(original.Tuple.Elements[i], oe, fmt.Sprintf("%s(%d)", fieldName, i)); err != nil {
+				return err
+			}
+		}
+	}
 	return nil
+}
+
+// adoptUntypedLiteral mutates override in place so an untyped int/float
+// literal adopts original's primitive type (with int range-check).
+func adoptUntypedLiteral(original, override *Value, fieldName string) error {
+	if !override.Adoptable || original.Type == nil || original.Type.BaseType == "" {
+		return nil
+	}
+	switch {
+	case override.Kind == KindInt && isIntegerType(original.Type.BaseType) && original.Type.BitSize > 0:
+		if err := checkIntRange(override.Int, original.Type.BitSize, original.Type.Signed); err != nil {
+			return fmt.Errorf("field %q: %w", fieldName, err)
+		}
+		override.Type = original.Type
+		override.Adoptable = false
+	case override.Kind == KindFloat && isFloatType(original.Type.BaseType):
+		override.Type = original.Type
+		override.Adoptable = false
+	}
+	return nil
+}
+
+// listElementExemplar returns a representative element value (used to
+// recurse into shape/type checks) and/or an explicit element type.
+func listElementExemplar(list *Value) (*Value, *TypeInfo) {
+	var exemplarType *TypeInfo
+	if list.List.ElementType != nil {
+		exemplarType = list.List.ElementType
+	} else if list.Type != nil && list.Type.ListElemType != nil {
+		exemplarType = list.Type.ListElemType
+	}
+	if len(list.List.Elements) > 0 {
+		return list.List.Elements[0], exemplarType
+	}
+	return nil, exemplarType
+}
+
+// syntheticTypedValue builds a placeholder Value carrying ti so that
+// list-element compat checks have something to compare against when the
+// original list is empty.
+func syntheticTypedValue(ti *TypeInfo) *Value {
+	if ti == nil || ti.BaseType == "" {
+		return nil
+	}
+	switch {
+	case isIntegerType(ti.BaseType):
+		return &Value{Kind: KindInt, Type: ti}
+	case isFloatType(ti.BaseType):
+		return &Value{Kind: KindFloat, Type: ti}
+	case ti.BaseType == "string":
+		return &Value{Kind: KindString, Type: ti}
+	case ti.BaseType == "bool":
+		return &Value{Kind: KindBool, Type: ti}
+	}
+	return nil
+}
+
+// namedStructTypeName returns the user-facing nominal type name, or "" if
+// the type is anonymous, a placeholder, or absent.
+func namedStructTypeName(t *TypeInfo) string {
+	if t == nil || t.Name == "" || t.Name == "__ident__" {
+		return ""
+	}
+	return t.Name
 }
 
 // evalPlus implements "plus { additions }" (§3.2.2).
