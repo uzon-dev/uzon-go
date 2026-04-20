@@ -4,7 +4,6 @@
 package token
 
 import (
-	"unicode"
 	"unicode/utf8"
 )
 
@@ -57,6 +56,8 @@ func (l *Lexer) errorf(pos Pos, format string, args ...interface{}) {
 
 // NewLexer creates a new Lexer for the given source.
 // A UTF-8 BOM at the start of src is silently stripped per §2.1.
+// Invalid UTF-8 sequences anywhere in src are recorded as lexical errors
+// per §2.1 (parser MUST reject the document).
 func NewLexer(src []byte, file string) *Lexer {
 	// Skip UTF-8 BOM (U+FEFF) per §2.1.
 	if len(src) >= 3 && src[0] == 0xEF && src[1] == 0xBB && src[2] == 0xBF {
@@ -68,8 +69,31 @@ func NewLexer(src []byte, file string) *Lexer {
 		line: 1,
 		col:  1,
 	}
+	if !utf8.Valid(src) {
+		l.errorf(firstInvalidUTF8Pos(src, file), "invalid UTF-8 encoding")
+	}
 	l.advance()
 	return l
+}
+
+// firstInvalidUTF8Pos locates the position of the first invalid UTF-8
+// byte in src, tracking 1-based line/column counts.
+func firstInvalidUTF8Pos(src []byte, file string) Pos {
+	line, col := 1, 1
+	for i := 0; i < len(src); {
+		r, size := utf8.DecodeRune(src[i:])
+		if r == utf8.RuneError && size == 1 {
+			return Pos{File: file, Line: line, Column: col, Offset: i}
+		}
+		if r == '\n' {
+			line++
+			col = 1
+		} else {
+			col++
+		}
+		i += size
+	}
+	return Pos{File: file, Line: line, Column: col}
 }
 
 // Next returns the next token from the source.
@@ -313,8 +337,10 @@ var tokenBoundary = [128]bool{
 }
 
 // isIdentStart reports whether ch can start an identifier.
-// Per §2.3, identifiers can start with any non-whitespace, non-boundary,
-// non-digit character (including Unicode letters, emoji, etc.).
+// Per §2.1 and §2.3, only ASCII space/tab/LF/CR and the listed ASCII
+// punctuation terminate identifiers — any non-ASCII rune (including
+// U+00A0 non-breaking space and U+2000–U+200B typographic spaces) is a
+// valid identifier character.
 func isIdentStart(ch rune) bool {
 	if ch < 0 {
 		return false
@@ -322,7 +348,7 @@ func isIdentStart(ch rune) bool {
 	if ch < 128 {
 		return !tokenBoundary[ch] && ch != ' ' && ch != '\t' && ch != '\n' && ch != '\r' && !isDigit(ch)
 	}
-	return !unicode.IsSpace(ch)
+	return true
 }
 
 // isIdentContinue reports whether ch can continue an identifier.
@@ -334,7 +360,7 @@ func isIdentContinue(ch rune) bool {
 	if ch < 128 {
 		return !tokenBoundary[ch] && ch != ' ' && ch != '\t' && ch != '\n' && ch != '\r'
 	}
-	return !unicode.IsSpace(ch)
+	return true
 }
 
 func isDigit(ch rune) bool {

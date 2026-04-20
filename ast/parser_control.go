@@ -201,8 +201,8 @@ func (p *Parser) parseFunctionExpr() Expr {
 	if !p.at(token.Returns) {
 		for {
 			pPos := p.cur.Pos
-			pName := p.parseName()
-			if pName == "" {
+			pName, ok := p.parseName()
+			if !ok {
 				break
 			}
 			if seenNames[pName] {

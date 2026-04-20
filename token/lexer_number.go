@@ -38,7 +38,9 @@ func (l *Lexer) scanNegativeNumber(pos Pos) Token {
 
 // scanNumber scans an integer or float literal.
 // Supports decimal, hex (0x), octal (0o), binary (0b), underscore
-// separators, decimal points, and exponents.
+// separators, decimal points, and exponents. Per §2.3, if the resulting
+// numeric token is immediately followed by identifier-continue runes
+// (e.g. `1st`, `0xZZ`), the whole span is reinterpreted as an identifier.
 func (l *Lexer) scanNumber(pos Pos) Token {
 	start := l.pos - l.chSize
 
@@ -48,14 +50,23 @@ func (l *Lexer) scanNumber(pos Pos) Token {
 		case 'x', 'X':
 			l.advance()
 			l.scanHexDigits()
+			if isIdentContinue(l.ch) {
+				return l.continueAsIdent(pos, start)
+			}
 			return Token{Type: IntLit, Literal: string(l.src[start:l.litEnd()]), Pos: pos}
 		case 'o', 'O':
 			l.advance()
 			l.scanOctDigits()
+			if isIdentContinue(l.ch) {
+				return l.continueAsIdent(pos, start)
+			}
 			return Token{Type: IntLit, Literal: string(l.src[start:l.litEnd()]), Pos: pos}
 		case 'b', 'B':
 			l.advance()
 			l.scanBinDigits()
+			if isIdentContinue(l.ch) {
+				return l.continueAsIdent(pos, start)
+			}
 			return Token{Type: IntLit, Literal: string(l.src[start:l.litEnd()]), Pos: pos}
 		}
 	} else {
@@ -84,11 +95,29 @@ func (l *Lexer) scanNumber(pos Pos) Token {
 		l.scanDecDigits()
 	}
 
+	if isIdentContinue(l.ch) {
+		return l.continueAsIdent(pos, start)
+	}
+
 	lit := string(l.src[start:l.litEnd()])
 	if isFloat {
 		return Token{Type: FloatLit, Literal: lit, Pos: pos}
 	}
 	return Token{Type: IntLit, Literal: lit, Pos: pos}
+}
+
+// continueAsIdent extends the current scan position to the next token
+// boundary and returns the whole span as an identifier. Used when a
+// digit-starting span does not fully match numeric grammar (§2.3).
+func (l *Lexer) continueAsIdent(pos Pos, start int) Token {
+	for isIdentContinue(l.ch) {
+		l.advance()
+	}
+	lit := string(l.src[start:l.litEnd()])
+	if tt, ok := Keywords[lit]; ok {
+		return Token{Type: tt, Literal: lit, Pos: pos}
+	}
+	return Token{Type: Ident, Literal: lit, Pos: pos}
 }
 
 func (l *Lexer) scanDecDigits() {

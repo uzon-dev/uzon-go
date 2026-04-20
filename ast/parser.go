@@ -110,8 +110,8 @@ func (p *Parser) parseBindings(stop token.Type) []*Binding {
 //   - "x is not named ..." → UnaryExpr(not, IdentExpr("named") with suffix)
 func (p *Parser) parseBinding() *Binding {
 	pos := p.cur.Pos
-	name := p.parseName()
-	if name == "" {
+	name, ok := p.parseName()
+	if !ok {
 		// §11.2: suggest @keyword escape when a keyword appears at binding position.
 		if token.IsKeyword(p.cur.Literal) && p.cur.Type != token.EOF && isBindingOperator(p.peek.Type) {
 			p.errorf(pos, "%q is a keyword; to use it as a binding name, write @%s",
@@ -188,7 +188,7 @@ func (p *Parser) parseBinding() *Binding {
 			p.errorf(p.cur.Pos, "'called' is not permitted with standalone type declarations (§6.2)")
 		} else {
 			p.advance()
-			b.CalledName = p.parseName()
+			b.CalledName, _ = p.parseName()
 		}
 	}
 
@@ -210,29 +210,30 @@ func isStandaloneTypeDecl(expr Expr) bool {
 	return false
 }
 
-// parseName reads an identifier name.
+// parseName reads an identifier name and reports whether one was found.
 // Also allows the contextual keyword "env" and keyword escapes (@keyword)
 // as binding names per §9: name = identifier | keyword_escape.
-func (p *Parser) parseName() string {
+// Per §2.3, empty quoted identifiers (`''`) are valid and yield ("", true).
+func (p *Parser) parseName() (string, bool) {
 	if p.at(token.Ident) {
 		name := p.cur.Literal
 		p.advance()
-		return name
+		return name, true
 	}
 	// Allow contextual keywords as binding names (e.g. "env is ...")
 	if p.at(token.Env) {
 		name := p.cur.Literal
 		p.advance()
-		return name
+		return name, true
 	}
 	// Keyword escape: @keyword (§9 name = identifier | keyword_escape).
 	if p.at(token.At) && token.IsKeyword(p.peek.Literal) {
 		name := p.peek.Literal
 		p.advance() // consume @
 		p.advance() // consume keyword
-		return name
+		return name, true
 	}
-	return ""
+	return "", false
 }
 
 // parseNameOrKeyword reads a name that could also be a keyword.
