@@ -59,12 +59,30 @@ func (ev *Evaluator) evalStruct(e *ast.StructExpr, scope *Scope) (*Value, error)
 
 func (ev *Evaluator) evalList(e *ast.ListExpr, scope *Scope) (*Value, error) {
 	var elems []*Value
-	for _, elem := range e.Elements {
+	for i, elem := range e.Elements {
 		v, err := ev.evalExpr(elem, scope)
 		if err != nil {
 			return nil, err
 		}
+		// §3.4: undefined cannot be stored as a list element.
+		if v.Kind == KindUndefined {
+			return nil, fmt.Errorf("list element at index %d is undefined; use 'or else' to provide a fallback (§3.4)", i)
+		}
 		elems = append(elems, v)
+	}
+	// §3.4: a non-empty list of all-null elements has no inferable type and
+	// requires an explicit `as [Type]` annotation.
+	if len(elems) > 0 {
+		allNull := true
+		for _, el := range elems {
+			if el.Kind != KindNull {
+				allNull = false
+				break
+			}
+		}
+		if allNull {
+			return nil, fmt.Errorf("list of only null requires type annotation (e.g. [null] as [string]) (§3.4)")
+		}
 	}
 	// §3.4: list elements must be same type
 	if len(elems) > 1 {

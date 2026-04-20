@@ -153,9 +153,11 @@ func (e *emitter) emitValueInner(v *Value, withAnnotation bool) {
 		e.sb.WriteString("<function>")
 	}
 
-	// Emit non-default type annotation (§6)
+	// Emit non-default type annotation (§6). Lists handle their own type
+	// suffix inside emitList, so they are excluded here.
 	if withAnnotation && v.Type != nil && v.Type.BaseType != "" &&
-		v.Kind != KindEnum && v.Kind != KindTaggedUnion && v.Kind != KindUnion {
+		v.Kind != KindEnum && v.Kind != KindTaggedUnion && v.Kind != KindUnion &&
+		v.Kind != KindList {
 		if v.Type.Name != "__ident__" && needsTypeAnnotation(v) {
 			e.sb.WriteString(" as ")
 			e.sb.WriteString(v.Type.BaseType)
@@ -187,6 +189,10 @@ func needsTypeAnnotation(v *Value) bool {
 		return v.Type.BaseType != "i64"
 	case KindFloat:
 		return v.Type.BaseType != "f64"
+	case KindList:
+		// Empty lists emit a trailing `as [T]` so the element type survives
+		// the roundtrip (§3.4: empty list requires type annotation).
+		return v.List != nil && len(v.List.Elements) == 0 && v.List.ElementType != nil
 	}
 	return false
 }

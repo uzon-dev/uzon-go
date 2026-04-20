@@ -79,9 +79,9 @@ func (ev *Evaluator) evalLiteral(e *ast.LiteralExpr) (*Value, error) {
 		return Null(), nil
 	case token.Inf:
 		f := new(big.Float).SetPrec(53).SetInf(false)
-		return &Value{Kind: KindFloat, Float: f, Type: &TypeInfo{BaseType: "f64", BitSize: 64}}, nil
+		return &Value{Kind: KindFloat, Float: f, Type: &TypeInfo{BaseType: "f64", BitSize: 64}, Adoptable: true}, nil
 	case token.NaN:
-		return &Value{Kind: KindFloat, Float: new(big.Float), FloatIsNaN: true, Type: &TypeInfo{BaseType: "f64", BitSize: 64}}, nil
+		return &Value{Kind: KindFloat, Float: new(big.Float), FloatIsNaN: true, Type: &TypeInfo{BaseType: "f64", BitSize: 64}, Adoptable: true}, nil
 	default:
 		return nil, fmt.Errorf("unexpected literal token: %v", e.Token.Type)
 	}

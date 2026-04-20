@@ -474,6 +474,29 @@ func (ev *Evaluator) evalStructWithType(e *ast.StructExpr, scope *Scope, ti *Typ
 	}, nil
 }
 
+// literalAdoptableTo reports whether an adoptable literal value can adopt
+// the declared type. Integer literals adopt integer or float types
+// (cross-category promotion per §5); float literals adopt only float
+// types; bool/string adopt their own kind; null adopts anything.
+func literalAdoptableTo(v *Value, ti *TypeInfo) bool {
+	if v == nil || ti == nil || ti.BaseType == "" {
+		return true
+	}
+	switch v.Kind {
+	case KindInt:
+		return isIntegerType(ti.BaseType) || isFloatType(ti.BaseType)
+	case KindFloat:
+		return isFloatType(ti.BaseType)
+	case KindBool:
+		return ti.BaseType == "bool"
+	case KindString:
+		return ti.BaseType == "string"
+	case KindNull:
+		return true
+	}
+	return true
+}
+
 // evalListWithType evaluates each list element with elemTi as type context,
 // then applies the element type to the resulting list.
 func (ev *Evaluator) evalListWithType(e *ast.ListExpr, scope *Scope, elemTi *TypeInfo) (*Value, error) {
@@ -518,6 +541,12 @@ func (ev *Evaluator) evalListElemWithType(el ast.Expr, scope *Scope, elemTi *Typ
 		return nil, err
 	}
 	if v.Adoptable && elemTi.BaseType != "" {
+		// §3.4 / §6.1: an adoptable literal can only adopt a type whose kind
+		// matches. Without this check, `[1, 2, 3] as [string]` would silently
+		// retype int literals as strings.
+		if !literalAdoptableTo(v, elemTi) {
+			return nil, typeErrorf("list element: cannot use %s as %s", v.Kind, elemTi.BaseType)
+		}
 		if v.Kind == KindInt && isIntegerType(elemTi.BaseType) {
 			if err := checkIntRange(v.Int, elemTi.BitSize, elemTi.Signed); err != nil {
 				return nil, err
@@ -525,6 +554,10 @@ func (ev *Evaluator) evalListElemWithType(el ast.Expr, scope *Scope, elemTi *Typ
 		}
 		v.Type = elemTi
 		v.Adoptable = false
+	} else if v.Kind == KindNull {
+		// §3.4: null adopts the declared element type.
+	} else if elemTi.BaseType != "" && v.Type != nil && v.Type.BaseType != "" && v.Type.BaseType != elemTi.BaseType {
+		return nil, typeErrorf("list element: type %s incompatible with %s", v.Type.BaseType, elemTi.BaseType)
 	} else if elemTi.Name != "" {
 		if v.Type != nil && v.Type.Name != "" && v.Type.Name != "__ident__" && v.Type.Name != elemTi.Name {
 			return nil, fmt.Errorf("list element type %s is not compatible with %s", v.Type.Name, elemTi.Name)
