@@ -417,6 +417,25 @@ func (ev *Evaluator) evalAs(e *ast.AsExpr, scope *Scope) (*Value, error) {
 		}
 	}
 
+	// §3.3 tuple shape and element-type validation: when annotating with a
+	// tuple type `(T1, T2, ...)`, the value must be a tuple of matching
+	// arity, and each element must be compatible with the declared type.
+	if ti.BaseType == "tuple" && e.TypeExpr.TupleElems != nil {
+		if val.Kind != KindTuple {
+			return nil, typeErrorf("cannot annotate %s as tuple", val.Kind)
+		}
+		if len(val.Tuple.Elements) != len(ti.TupleElemTypes) {
+			return nil, typeErrorf("tuple arity mismatch: value has %d element(s), type %s has %d",
+				len(val.Tuple.Elements), typeInfoString(ti), len(ti.TupleElemTypes))
+		}
+		for i, expectedTi := range ti.TupleElemTypes {
+			el := val.Tuple.Elements[i]
+			if err := ev.checkValueAgainstType(el, expectedTi, fmt.Sprintf("tuple element %d", i)); err != nil {
+				return nil, err
+			}
+		}
+	}
+
 	// §6.2: named type must be resolvable — reject unknown type names
 	if ti.Name != "" && ti.BaseType == "" {
 		if _, ok := ev.types.get(e.TypeExpr.Path); !ok {
@@ -664,6 +683,119 @@ func syntheticTypedValue(ti *TypeInfo) *Value {
 		return &Value{Kind: KindString, Type: ti}
 	case ti.BaseType == "bool":
 		return &Value{Kind: KindBool, Type: ti}
+	}
+	return nil
+}
+
+// typeInfoString renders a TypeInfo for diagnostics (handles tuples,
+// lists, and named/builtin scalars).
+func typeInfoString(ti *TypeInfo) string {
+	if ti == nil {
+		return "<unknown>"
+	}
+	if ti.BaseType == "tuple" {
+		s := "("
+		for i, et := range ti.TupleElemTypes {
+			if i > 0 {
+				s += ", "
+			}
+			s += typeInfoString(et)
+		}
+		return s + ")"
+	}
+	if ti.BaseType == "list" || ti.ListElemType != nil {
+		return "[" + typeInfoString(ti.ListElemType) + "]"
+	}
+	if ti.Name != "" && ti.Name != "__ident__" {
+		return ti.Name
+	}
+	if ti.BaseType != "" {
+		return ti.BaseType
+	}
+	return "<unknown>"
+}
+
+// checkValueAgainstType validates that v conforms to expected and adopts
+// untyped literal types in place. Used for §3.3 tuple element validation
+// during `as TupleType`. Recurses into nested tuples and lists.
+func (ev *Evaluator) checkValueAgainstType(v *Value, expected *TypeInfo, ctx string) error {
+	if expected == nil {
+		return nil
+	}
+	if v.Kind == KindNull {
+		if expected.BaseType == "null" {
+			return nil
+		}
+		return typeErrorf("%s: null is not compatible with %s", ctx, typeInfoString(expected))
+	}
+	switch {
+	case isIntegerType(expected.BaseType):
+		if v.Kind != KindInt {
+			return typeErrorf("%s: cannot use %s as %s", ctx, v.Kind, expected.BaseType)
+		}
+		if err := checkIntRange(v.Int, expected.BitSize, expected.Signed); err != nil {
+			return fmt.Errorf("%s: %w", ctx, err)
+		}
+		if v.Adoptable {
+			v.Type = expected
+			v.Adoptable = false
+		} else if v.Type != nil && v.Type.BaseType != expected.BaseType {
+			return typeErrorf("%s: type %s incompatible with %s", ctx, v.Type.BaseType, expected.BaseType)
+		}
+		return nil
+	case isFloatType(expected.BaseType):
+		if v.Kind != KindFloat && v.Kind != KindInt {
+			return typeErrorf("%s: cannot use %s as %s", ctx, v.Kind, expected.BaseType)
+		}
+		if v.Adoptable {
+			v.Type = expected
+			v.Adoptable = false
+		}
+		return nil
+	case expected.BaseType == "bool":
+		if v.Kind != KindBool {
+			return typeErrorf("%s: cannot use %s as bool", ctx, v.Kind)
+		}
+		return nil
+	case expected.BaseType == "string":
+		if v.Kind != KindString {
+			return typeErrorf("%s: cannot use %s as string", ctx, v.Kind)
+		}
+		return nil
+	case expected.BaseType == "tuple":
+		if v.Kind != KindTuple {
+			return typeErrorf("%s: cannot use %s as tuple", ctx, v.Kind)
+		}
+		if len(v.Tuple.Elements) != len(expected.TupleElemTypes) {
+			return typeErrorf("%s: tuple arity mismatch: %d vs %d",
+				ctx, len(v.Tuple.Elements), len(expected.TupleElemTypes))
+		}
+		for i, sub := range expected.TupleElemTypes {
+			if err := ev.checkValueAgainstType(v.Tuple.Elements[i], sub, fmt.Sprintf("%s[%d]", ctx, i)); err != nil {
+				return err
+			}
+		}
+		return nil
+	case expected.BaseType == "list" || expected.ListElemType != nil:
+		if v.Kind != KindList {
+			return typeErrorf("%s: cannot use %s as list", ctx, v.Kind)
+		}
+		if expected.ListElemType != nil {
+			for i, el := range v.List.Elements {
+				if err := ev.checkValueAgainstType(el, expected.ListElemType, fmt.Sprintf("%s[%d]", ctx, i)); err != nil {
+					return err
+				}
+			}
+		}
+		return nil
+	}
+	if expected.Name != "" && expected.Name != "__ident__" {
+		if v.Type == nil || v.Type.Name == "" || v.Type.Name == "__ident__" {
+			return nil
+		}
+		if v.Type.Name != expected.Name {
+			return typeErrorf("%s: named type %s incompatible with %s", ctx, v.Type.Name, expected.Name)
+		}
 	}
 	return nil
 }
