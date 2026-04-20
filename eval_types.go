@@ -895,15 +895,24 @@ func (ev *Evaluator) evalFrom(e *ast.FromExpr, scope *Scope) (*Value, error) {
 		}
 		seen[v] = true
 	}
-	val, err := ev.evalExpr(e.Value, scope)
-	if err != nil {
-		return nil, err
-	}
+	// §3.5 explicit variant position: the identifier immediately before `from`
+	// resolves as a variant of the just-declared enum if it matches, even if a
+	// same-name binding is in scope. This is structurally committed (a binding
+	// reference would select a non-variant value), so variants win here just
+	// like inside the variant list.
 	var variant string
-	if val.Type != nil && val.Type.Name == "__ident__" {
-		variant = val.Str
-	} else if val.Kind == KindString {
-		variant = val.Str
+	if ie, ok := e.Value.(*ast.IdentExpr); ok && seen[ie.Name] {
+		variant = ie.Name
+	} else {
+		val, err := ev.evalExpr(e.Value, scope)
+		if err != nil {
+			return nil, err
+		}
+		if val.Type != nil && val.Type.Name == "__ident__" {
+			variant = val.Str
+		} else if val.Kind == KindString {
+			variant = val.Str
+		}
 	}
 	// §3.5: selected variant must be in the variant list
 	found := false
