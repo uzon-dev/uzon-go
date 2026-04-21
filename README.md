@@ -1,6 +1,6 @@
 # uzon-go
 
-Go implementation of [UZON](https://uzon.dev), a typed, human-readable data expression format.
+Go implementation of [UZON](https://uzon.dev), a typed configuration language.
 
 Implements [UZON specification v0.10](https://uzon.dev). Requires Go 1.25 or later.
 
