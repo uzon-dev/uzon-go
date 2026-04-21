@@ -239,19 +239,21 @@ func (ev *Evaluator) evalAs(e *ast.AsExpr, scope *Scope) (*Value, error) {
 		return ctxVal, nil
 	}
 
-	// §6.3: `as <TaggedUnion>` without `named <variant>` is a type error.
-	// Variant-shorthand and nullary forms are consumed by evalAsWithContext
-	// above, so any AsExpr that reaches here and targets a tagged union is a
-	// bare cast missing its `named <variant>` clause.
-	if ti != nil && ti.Name != "" && ti.BaseType == "" {
-		if _, isTU := ev.taggedVariants.get(ti.Name); isTU {
-			return nil, typeErrorf("`as %s` requires `named <variant>` to specify the active variant (§6.3)", ti.Name)
-		}
-	}
-
 	val, err := ev.evalExpr(e.Value, scope)
 	if err != nil {
 		return nil, err
+	}
+
+	// §6.3: `as <TaggedUnion>` without `named <variant>`. Re-annotating an
+	// already-tagged value with its own type is a no-op (§7.3 preservation).
+	// A non-tagged value requires `named` to select a variant.
+	if ti != nil && ti.Name != "" && ti.BaseType == "" {
+		if _, isTU := ev.taggedVariants.get(ti.Name); isTU {
+			if val.Kind == KindTaggedUnion && val.Type != nil && sameNominalType(val.Type, ti) {
+				return val, nil
+			}
+			return nil, typeErrorf("`as %s` requires `named <variant>` to specify the active variant (§6.3)", ti.Name)
+		}
 	}
 
 	// §6.1 R6: `null as T` is a type error unless T admits null.
