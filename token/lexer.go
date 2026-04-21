@@ -78,12 +78,15 @@ func NewLexer(src []byte, file string) *Lexer {
 	return l
 }
 
-// validateSourceChars enforces §2.3 character restrictions on the raw source:
-//   - Control characters U+0000–U+001F and U+007F (except LF, CR, HT) MUST
-//     be rejected anywhere in source — inside strings, comments, and
-//     identifiers alike.
+// validateSourceChars enforces §2.1, §2.3, and §4.4 character restrictions
+// on the raw source:
+//   - Control characters U+0000–U+001F and U+007F (except LF, CR, HT outside
+//     strings) MUST be rejected — inside strings the full range including
+//     LF, CR, and HT is forbidden per §4.4 (use escape sequences).
 //   - RTL and bidi marks (U+200E, U+200F, U+202A–U+202E, U+2066–U+2069)
 //     MUST be rejected outside string literals.
+//   - BOM (U+FEFF) outside the leading byte position is a syntax error
+//     outside string literals and comments per §2.1.
 //
 // A minimal state machine tracks line comments and string literals so that
 // bidi marks inside string content are accepted while marks in surrounding
@@ -98,8 +101,15 @@ func (l *Lexer) validateSourceChars() {
 		r, size := utf8.DecodeRune(l.src[i:])
 		pos := Pos{File: l.file, Line: line, Column: col, Offset: i}
 
-		if isForbiddenControl(r) {
+		if inString {
+			if isStringForbiddenControl(r) {
+				l.errorf(pos, "raw control character U+%04X is not allowed in string literals (use an escape sequence)", r)
+			}
+		} else if isForbiddenControl(r) {
 			l.errorf(pos, "control character U+%04X is not allowed in source", r)
+		}
+		if !inString && !inLineComment && r == 0xFEFF {
+			l.errorf(pos, "byte order mark (U+FEFF) is not allowed outside string literals and comments")
 		}
 		if !inString && isBidiMark(r) {
 			l.errorf(pos, "bidi/directional mark U+%04X is not allowed outside string literals", r)
@@ -148,11 +158,18 @@ func (l *Lexer) validateSourceChars() {
 }
 
 // isForbiddenControl reports whether r is a control character that §2.3
-// forbids in source. LF, CR, and HT are permitted.
+// forbids outside string literals. LF, CR, and HT are permitted.
 func isForbiddenControl(r rune) bool {
 	if r == '\n' || r == '\r' || r == '\t' {
 		return false
 	}
+	return r <= 0x1F || r == 0x7F
+}
+
+// isStringForbiddenControl reports whether r is a raw control character
+// that §4.4 forbids inside string literals. The full range U+0000–U+001F
+// and U+007F is rejected — use escape sequences (\n, \r, \t, \0, \u{...}).
+func isStringForbiddenControl(r rune) bool {
 	return r <= 0x1F || r == 0x7F
 }
 

@@ -315,6 +315,59 @@ func TestLexerBOM(t *testing.T) {
 	if tok.Type != Ident || tok.Literal != "x" {
 		t.Errorf("expected Ident x after BOM, got %v %q", tok.Type, tok.Literal)
 	}
+	if errs := lex.Errors(); len(errs) > 0 {
+		t.Errorf("leading BOM should not error, got: %v", errs)
+	}
+}
+
+func TestLexerMidFileBOMRejected(t *testing.T) {
+	// §2.1: BOM mid-file (outside strings and comments) is a syntax error.
+	src := []byte("x is \uFEFF42")
+	lex := NewLexer(src, "")
+	if errs := lex.Errors(); len(errs) == 0 {
+		t.Fatalf("expected mid-file BOM to produce an error")
+	}
+}
+
+func TestLexerBOMInStringAllowed(t *testing.T) {
+	// §2.1: BOM inside string literals is a literal ZWNBSP character.
+	src := []byte("x is \"a\uFEFFb\"")
+	lex := NewLexer(src, "")
+	if errs := lex.Errors(); len(errs) > 0 {
+		t.Fatalf("BOM inside string should be permitted, got: %v", errs)
+	}
+}
+
+func TestLexerBOMInCommentAllowed(t *testing.T) {
+	// §2.1: BOM inside comments is discarded with the comment content.
+	src := []byte("// a \uFEFF b\nx is 1")
+	lex := NewLexer(src, "")
+	if errs := lex.Errors(); len(errs) > 0 {
+		t.Fatalf("BOM inside comment should be permitted, got: %v", errs)
+	}
+}
+
+func TestLexerRawControlInStringRejected(t *testing.T) {
+	// §4.4: raw control characters U+0000–U+001F and U+007F MUST NOT appear
+	// literally inside string literals.
+	cases := []struct {
+		name string
+		src  []byte
+	}{
+		{"raw LF in string", []byte("x is \"a\nb\"")},
+		{"raw CR in string", []byte("x is \"a\rb\"")},
+		{"raw HT in string", []byte("x is \"a\tb\"")},
+		{"raw NUL in string", []byte("x is \"a\x00b\"")},
+		{"raw DEL in string", []byte("x is \"a\x7fb\"")},
+	}
+	for _, c := range cases {
+		t.Run(c.name, func(t *testing.T) {
+			lex := NewLexer(c.src, "")
+			if errs := lex.Errors(); len(errs) == 0 {
+				t.Errorf("expected raw control character error, got none")
+			}
+		})
+	}
 }
 
 func TestLexerPeek(t *testing.T) {
