@@ -39,8 +39,10 @@ func (ev *Evaluator) evalFunctionDef(e *ast.FunctionExpr, scope *Scope) (*Value,
 					return nil, fmt.Errorf("parameter %q default value references parameter %q (parameters are not in scope until the function body)", p.Name, ref)
 				}
 			}
-			// Evaluate default in the enclosing scope.
-			dv, err := ev.evalExpr(p.Default, scope)
+			// Evaluate default in the enclosing scope. §3.5 rule 4: default
+			// expressions are a type-context inference position — a bare
+			// variant name resolves against an enum/tagged-union parameter type.
+			dv, err := ev.evalExprWithType(p.Default, scope, ti)
 			if err != nil {
 				return nil, err
 			}
@@ -110,7 +112,10 @@ func (ev *Evaluator) callFunction(fn *Value, args []*Value) (*Value, error) {
 	fullArgs = append(fullArgs, args...)
 	for i := len(args); i < len(fe.Params); i++ {
 		if fe.Params[i].Default != nil {
-			dv, err := ev.evalExpr(fe.Params[i].Default, fv.Scope.(*Scope))
+			// §3.5 rule 4: default expressions evaluate in the enclosing
+			// scope under the parameter's declared type as context.
+			pti := ev.resolveTypeExpr(fe.Params[i].TypeExpr)
+			dv, err := ev.evalExprWithType(fe.Params[i].Default, fv.Scope.(*Scope), pti)
 			if err != nil {
 				return nil, err
 			}
